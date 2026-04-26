@@ -1,15 +1,22 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
 const navigationItems = [
-  "Dashboard",
-  "Mandanten",
-  "Steuerakten",
-  "Depots",
-  "Uploads",
-  "Berechnung",
-  "Exporte",
-  "Einstellungen",
+  { label: "Dashboard", href: "/dashboard" },
+  { label: "Mandanten", href: "/clients" },
+  { label: "Steuerakten", href: "/tax-files" },
+  { label: "Depots", href: "/portfolios" },
+  { label: "Uploads", href: "/uploads" },
+  { label: "Berechnung", href: "/calculations" },
+  { label: "Exporte", href: "/exports" },
+  { label: "Einstellungen", href: "/settings" },
 ] as const;
 
 export function Sidebar() {
+  const pathname = usePathname();
+
   return (
     <aside className="flex h-screen w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-100">
       <div className="border-b border-zinc-200 px-6 py-6">
@@ -20,21 +27,21 @@ export function Sidebar() {
       <nav className="flex-1 px-3 py-4">
         <ul className="space-y-1">
           {navigationItems.map((item) => {
-            const isActive = item === "Dashboard";
+            const isActive = pathname === item.href;
 
             return (
-              <li key={item}>
-                <button
-                  type="button"
+              <li key={item.href}>
+                <Link
+                  href={item.href}
                   className={[
-                    "w-full rounded-md px-3 py-2 text-left text-sm transition-colors",
+                    "block w-full rounded-md px-3 py-2 text-sm transition-colors",
                     isActive
                       ? "bg-zinc-900 font-medium text-zinc-50"
                       : "text-zinc-700 hover:bg-zinc-200",
                   ].join(" ")}
                 >
-                  {item}
-                </button>
+                  {item.label}
+                </Link>
               </li>
             );
           })}
