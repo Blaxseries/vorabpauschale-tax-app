@@ -6,11 +6,7 @@ import { usePathname } from "next/navigation";
 const navigationItems = [
   { label: "Dashboard", href: "/dashboard" },
   { label: "Mandanten", href: "/clients" },
-  { label: "Steuerakten", href: "/tax-files" },
-  { label: "Depots", href: "/portfolios" },
-  { label: "Uploads", href: "/uploads" },
-  { label: "Berechnung", href: "/calculations" },
-  { label: "Exporte", href: "/exports" },
+  { label: "Aufgaben", href: "/tasks" },
   { label: "Einstellungen", href: "/settings" },
 ] as const;
 

@@ -1,24 +1,40 @@
- "use client";
+"use client";
 
 import { usePathname } from "next/navigation";
 
 const pageMetadata: Record<string, { title: string; subtitle?: string }> = {
   "/dashboard": {
     title: "Dashboard",
-    subtitle: "Übersicht über Mandanten, Steuerakten und Berechnungen",
+    subtitle: "Übersicht über Mandate, Fristen und Berechnungen",
   },
   "/clients": { title: "Mandanten" },
-  "/tax-files": { title: "Steuerakten" },
-  "/portfolios": { title: "Depots" },
-  "/uploads": { title: "Uploads" },
-  "/calculations": { title: "Berechnung" },
-  "/exports": { title: "Exporte" },
+  "/tasks": { title: "Aufgaben" },
   "/settings": { title: "Einstellungen" },
 };
 
 export function Header() {
   const pathname = usePathname();
-  const currentPage = pageMetadata[pathname] ?? { title: "VorabTax" };
+  const currentPage = (() => {
+    if (pageMetadata[pathname]) {
+      return pageMetadata[pathname];
+    }
+
+    if (pathname.startsWith("/clients/") && pathname.includes("/years/")) {
+      return {
+        title: "Steuerjahr-Arbeitsbereich",
+        subtitle: "Mandantenakte je Steuerjahr mit fachlichem Teilbereich",
+      };
+    }
+
+    if (pathname.startsWith("/clients/")) {
+      return {
+        title: "Mandantenakte",
+        subtitle: "Stammdaten, Steuerjahre und letzte Aktivitäten",
+      };
+    }
+
+    return { title: "VorabTax" };
+  })();
 
   return (
     <header className="flex h-20 items-center justify-between border-b border-zinc-200 bg-white px-8">
