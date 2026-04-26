@@ -1,4 +1,3 @@
-import { AppShell } from "@/components/app-shell";
 import { StatCard } from "@/components/stat-card";
 import { clients, fundPositions, portfolios, taxFiles } from "@/lib/mock-data";
 
@@ -31,10 +30,7 @@ export default function DashboardPage() {
   ];
 
   return (
-    <AppShell
-      title="Dashboard"
-      subtitle="Übersicht über Mandanten, Steuerakten und Berechnungen"
-    >
+    <>
       <section className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
         {dashboardStats.map((stat) => (
           <StatCard
@@ -54,6 +50,6 @@ export default function DashboardPage() {
           <li>2 Steuerakten auf Wiedervorlage für morgen gesetzt</li>
         </ul>
       </section>
-    </AppShell>
+    </>
   );
 }
