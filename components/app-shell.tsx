@@ -13,7 +13,7 @@ export function AppShell({ children }: AppShellProps) {
       <Sidebar />
       <div className="flex flex-1 flex-col">
         <Header />
-        <main className="flex-1 p-6">{children}</main>
+        <main className="flex-1 px-8 py-6">{children}</main>
       </div>
     </div>
   );
