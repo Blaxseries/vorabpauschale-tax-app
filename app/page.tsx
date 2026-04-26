@@ -1,12 +1,33 @@
 import { AppShell } from "@/components/app-shell";
 import { StatCard } from "@/components/stat-card";
+import { clients, fundPositions, portfolios, taxFiles } from "@/lib/mock-data";
 
 export default function Home() {
+  const openTaxFilesCount = taxFiles.filter(
+    (taxFile) => taxFile.status !== "completed",
+  ).length;
+
   const dashboardStats = [
-    { title: "Anzahl Mandanten", value: "128", detail: "12 neu in diesem Quartal" },
-    { title: "Offene Steuerakten", value: "34", detail: "9 mit Frist in den nächsten 14 Tagen" },
-    { title: "Hochgeladene Statements", value: "512", detail: "47 Uploads in den letzten 7 Tagen" },
-    { title: "Letzte Berechnungen", value: "26", detail: "Zuletzt heute um 10:42 Uhr ausgeführt" },
+    {
+      title: "Anzahl Mandanten",
+      value: clients.length.toString(),
+      detail: "Aktive Mandanten im Datenbestand",
+    },
+    {
+      title: "Offene Steuerakten",
+      value: openTaxFilesCount.toString(),
+      detail: "Akte mit Status offen oder in Bearbeitung",
+    },
+    {
+      title: "Hochgeladene Statements",
+      value: portfolios.length.toString(),
+      detail: "Portfolios mit mindestens einem Upload",
+    },
+    {
+      title: "Letzte Berechnungen",
+      value: fundPositions.length.toString(),
+      detail: "Berechnete Fondspositionen im aktuellen Lauf",
+    },
   ];
 
   return (
