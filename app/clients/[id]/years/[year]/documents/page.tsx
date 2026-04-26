@@ -1,4 +1,7 @@
 import { ClientYearNav } from "@/components/client-year-nav";
+import { DocumentsWorkflow } from "@/components/documents-workflow";
+import { portfolios, taxFiles } from "@/lib/mock-data";
+import { notFound } from "next/navigation";
 
 type YearDocumentsPageProps = {
   params: Promise<{
@@ -9,16 +12,25 @@ type YearDocumentsPageProps = {
 
 export default async function YearDocumentsPage({ params }: YearDocumentsPageProps) {
   const { id, year } = await params;
+  const taxFile = taxFiles.find(
+    (entry) => entry.clientId === id && entry.year === Number(year),
+  );
+
+  if (!taxFile) {
+    notFound();
+  }
+
+  const portfolioOptions = portfolios
+    .filter((portfolio) => portfolio.taxFileId === taxFile.id)
+    .map((portfolio) => ({
+      id: portfolio.id,
+      label: `${portfolio.bankName} (${portfolio.country})`,
+    }));
 
   return (
     <div>
       <ClientYearNav clientId={id} year={year} />
-      <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
-        <h2 className="text-2xl font-semibold text-zinc-900">Dokumente</h2>
-        <p className="mt-2 text-sm text-zinc-600">
-          Kontoauszüge, Steuerbescheinigungen und Belege für das Steuerjahr {year}.
-        </p>
-      </section>
+      <DocumentsWorkflow year={year} portfolioOptions={portfolioOptions} />
     </div>
   );
 }
