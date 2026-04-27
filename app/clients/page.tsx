@@ -1,52 +1,122 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 
-import { clients as seedClients, taxFiles } from "@/lib/mock-data";
+import type { Client as DatabaseClient } from "@/lib/database.types";
+import { supabase } from "@/lib/supabase";
 
 type ClientStatus = "Aktiv" | "Rückfrage" | "Archiviert";
 
 type ClientRecord = {
   id: string;
   name: string;
-  clientNumber: string;
-  taxNumber: string;
-  residency: string;
+  client_number: string;
+  tax_number: string;
+  country: string;
   status: ClientStatus;
-  lastEdited: string;
+  updated_at: string | null;
 };
 
 type ClientFormState = {
   name: string;
-  clientNumber: string;
-  taxNumber: string;
-  residency: string;
+  client_number: string;
+  tax_number: string;
+  country: string;
 };
 
-const initialClients: ClientRecord[] = seedClients.map((client, index) => ({
-  id: client.id,
-  name: client.name,
-  clientNumber: `M-${(index + 1).toString().padStart(4, "0")}`,
-  taxNumber: client.taxNumber,
-  residency: client.country,
-  status: index % 3 === 0 ? "Rückfrage" : "Aktiv",
-  lastEdited: `${(26 - index).toString().padStart(2, "0")}.04.2026`,
-}));
+type ClientsTableRow = Pick<
+  DatabaseClient,
+  "id" | "name" | "client_number" | "tax_number" | "country" | "created_at" | "updated_at"
+>;
 
 const emptyForm: ClientFormState = {
   name: "",
-  clientNumber: "",
-  taxNumber: "",
-  residency: "DE",
+  client_number: "",
+  tax_number: "",
+  country: "DE",
 };
 
 export default function ClientsPage() {
   const [query, setQuery] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [form, setForm] = useState<ClientFormState>(emptyForm);
-  const [clientRows, setClientRows] = useState<ClientRecord[]>(initialClients);
+  const [clientRows, setClientRows] = useState<ClientRecord[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  async function fetchClients(options?: { keepLoadingState?: boolean }) {
+    if (!options?.keepLoadingState) {
+      setIsLoading(true);
+    }
+    setErrorMessage(null);
+
+    const { data, error } = await supabase
+      .from("clients")
+      .select("id, name, client_number, tax_number, country, created_at, updated_at")
+      .returns<ClientsTableRow[]>();
+
+    if (error) {
+      setErrorMessage("Mandanten konnten nicht geladen werden.");
+      setIsLoading(false);
+      return;
+    }
+
+    const mappedClients: ClientRecord[] = data.map((row) => ({
+      id: row.id,
+      name: row.name,
+      client_number: row.client_number,
+      tax_number: row.tax_number,
+      country: row.country,
+      status: "Aktiv",
+      updated_at: row.updated_at ?? row.created_at,
+    }));
+
+    setClientRows(mappedClients);
+    setIsLoading(false);
+  }
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadClientsOnMount() {
+      const { data, error } = await supabase
+        .from("clients")
+        .select("id, name, client_number, tax_number, country, created_at, updated_at")
+        .returns<ClientsTableRow[]>();
+
+      if (!active) {
+        return;
+      }
+
+      if (error) {
+        setErrorMessage("Mandanten konnten nicht geladen werden.");
+        setIsLoading(false);
+        return;
+      }
+
+      const mappedClients: ClientRecord[] = data.map((row) => ({
+        id: row.id,
+        name: row.name,
+        client_number: row.client_number,
+        tax_number: row.tax_number,
+        country: row.country,
+        status: "Aktiv",
+        updated_at: row.updated_at ?? row.created_at,
+      }));
+
+      setClientRows(mappedClients);
+      setIsLoading(false);
+    }
+
+    void loadClientsOnMount();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const filteredClients = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -55,41 +125,53 @@ export default function ClientsPage() {
     }
 
     return clientRows.filter((client) =>
-      [client.name, client.clientNumber, client.taxNumber, client.residency]
+      [client.name, client.client_number, client.tax_number, client.country]
         .join(" ")
         .toLowerCase()
         .includes(normalizedQuery),
     );
   }, [clientRows, query]);
 
-  function getOpenYears(clientId: string): number {
-    return taxFiles.filter(
-      (taxFile) => taxFile.clientId === clientId && taxFile.status !== "completed",
-    ).length;
+  function formatUpdatedAt(value: string | null): string {
+    if (!value) {
+      return "-";
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "-";
+    }
+    return date.toLocaleDateString("de-DE");
   }
 
-  function handleCreateClient(event: FormEvent<HTMLFormElement>) {
+  async function handleCreateClient(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const name = form.name.trim();
-    const clientNumber = form.clientNumber.trim();
-    const taxNumber = form.taxNumber.trim();
-    const residency = form.residency.trim().toUpperCase();
+    const clientNumber = form.client_number.trim();
+    const taxNumber = form.tax_number.trim();
+    const country = form.country.trim().toUpperCase();
 
-    if (!name || !clientNumber || !taxNumber || !residency) {
+    if (!name || !clientNumber || !taxNumber || !country) {
       return;
     }
 
-    const newClient: ClientRecord = {
-      id: `c-${crypto.randomUUID()}`,
-      name,
-      clientNumber,
-      taxNumber,
-      residency,
-      status: "Aktiv",
-      lastEdited: new Date().toLocaleDateString("de-DE"),
-    };
+    setIsSubmitting(true);
+    setErrorMessage(null);
 
-    setClientRows((current) => [newClient, ...current]);
+    const { error } = await supabase.from("clients").insert({
+      name,
+      client_number: clientNumber,
+      tax_number: taxNumber,
+      country,
+    });
+
+    if (error) {
+      setErrorMessage("Mandant konnte nicht angelegt werden.");
+      setIsSubmitting(false);
+      return;
+    }
+
+    await fetchClients({ keepLoadingState: true });
+    setIsSubmitting(false);
     setShowCreateModal(false);
     setForm(emptyForm);
   }
@@ -122,6 +204,11 @@ export default function ClientsPage() {
             className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
           />
         </label>
+        {errorMessage ? (
+          <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {errorMessage}
+          </p>
+        ) : null}
       </section>
 
       <section className="overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm">
@@ -138,19 +225,23 @@ export default function ClientsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200">
+            {isLoading ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-zinc-500">
+                  Mandanten werden geladen...
+                </td>
+              </tr>
+            ) : null}
             {filteredClients.map((client) => (
               <tr key={client.id} className="text-zinc-700">
                 <td className="px-4 py-3">
                   <p className="font-medium text-zinc-900">{client.name}</p>
-                  <p className="text-xs text-zinc-500">
-                    {getOpenYears(client.id)} offene Steuerjahre
-                  </p>
                 </td>
-                <td className="px-4 py-3">{client.clientNumber}</td>
-                <td className="px-4 py-3">{client.taxNumber}</td>
-                <td className="px-4 py-3">{client.residency}</td>
+                <td className="px-4 py-3">{client.client_number}</td>
+                <td className="px-4 py-3">{client.tax_number}</td>
+                <td className="px-4 py-3">{client.country}</td>
                 <td className="px-4 py-3">{client.status}</td>
-                <td className="px-4 py-3">{client.lastEdited}</td>
+                <td className="px-4 py-3">{formatUpdatedAt(client.updated_at)}</td>
                 <td className="px-4 py-3">
                   <Link
                     href={`/clients/${client.id}`}
@@ -161,7 +252,7 @@ export default function ClientsPage() {
                 </td>
               </tr>
             ))}
-            {filteredClients.length === 0 ? (
+            {!isLoading && filteredClients.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-8 text-center text-zinc-500">
                   Keine Mandanten gefunden.
@@ -193,11 +284,11 @@ export default function ClientsPage() {
                 Mandantennummer
                 <input
                   type="text"
-                  value={form.clientNumber}
+                  value={form.client_number}
                   onChange={(event) =>
                     setForm((current) => ({
                       ...current,
-                      clientNumber: event.target.value,
+                      client_number: event.target.value,
                     }))
                   }
                   className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
@@ -208,9 +299,9 @@ export default function ClientsPage() {
                 Steuernummer
                 <input
                   type="text"
-                  value={form.taxNumber}
+                  value={form.tax_number}
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, taxNumber: event.target.value }))
+                    setForm((current) => ({ ...current, tax_number: event.target.value }))
                   }
                   className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
                   required
@@ -221,9 +312,9 @@ export default function ClientsPage() {
                 <input
                   type="text"
                   maxLength={2}
-                  value={form.residency}
+                  value={form.country}
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, residency: event.target.value }))
+                    setForm((current) => ({ ...current, country: event.target.value }))
                   }
                   className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2 uppercase"
                   required
@@ -242,9 +333,10 @@ export default function ClientsPage() {
                 </button>
                 <button
                   type="submit"
+                  disabled={isSubmitting}
                   className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 hover:bg-zinc-700"
                 >
-                  Mandant speichern
+                  {isSubmitting ? "Speichert..." : "Mandant speichern"}
                 </button>
               </div>
             </form>
