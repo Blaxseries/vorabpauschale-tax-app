@@ -1,55 +1,37 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+
+import type { Portfolio, TaxYear } from "@/lib/database.types";
+import { supabase } from "@/lib/supabase";
 
 type PortfolioStatus = "Offen" | "In Prüfung" | "Freigegeben";
 
 type PortfolioRow = {
   id: string;
-  bank: string;
+  bank_name: string;
   country: string;
-  accountNumber: string;
+  account_number: string;
   currency: string;
   documentCount: number;
   status: PortfolioStatus;
 };
 
 type PortfolioForm = {
-  bank: string;
+  bank_name: string;
   country: string;
-  accountNumber: string;
+  account_number: string;
   currency: string;
 };
 
 const initialForm: PortfolioForm = {
-  bank: "",
+  bank_name: "",
   country: "DE",
-  accountNumber: "",
+  account_number: "",
   currency: "EUR",
 };
-
-const initialRows: PortfolioRow[] = [
-  {
-    id: "pf-2026-001",
-    bank: "Deutsche Bank",
-    country: "DE",
-    accountNumber: "DEP-7781001",
-    currency: "EUR",
-    documentCount: 4,
-    status: "In Prüfung",
-  },
-  {
-    id: "pf-2026-002",
-    bank: "UBS",
-    country: "CH",
-    accountNumber: "DEP-9104218",
-    currency: "CHF",
-    documentCount: 2,
-    status: "Offen",
-  },
-];
 
 type PortfoliosWorkspaceProps = {
   clientId: string;
@@ -57,32 +39,115 @@ type PortfoliosWorkspaceProps = {
 };
 
 export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps) {
-  const [rows, setRows] = useState<PortfolioRow[]>(initialRows);
+  const [rows, setRows] = useState<PortfolioRow[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<PortfolioForm>(initialForm);
+  const [taxYearId, setTaxYearId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  function handleCreatePortfolio(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const bank = form.bank.trim();
-    const country = form.country.trim().toUpperCase();
-    const accountNumber = form.accountNumber.trim();
-    const currency = form.currency.trim().toUpperCase();
+  function mapPortfolioStatus(status: Portfolio["status"]): PortfolioStatus {
+    if (status === "approved") {
+      return "Freigegeben";
+    }
+    if (status === "in_review") {
+      return "In Prüfung";
+    }
+    return "Offen";
+  }
 
-    if (!bank || !country || !accountNumber || !currency) {
+  async function fetchPortfolios() {
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    const { data: taxYearData, error: taxYearError } = await supabase
+      .from("tax_years")
+      .select("id")
+      .eq("client_id", clientId)
+      .eq("year", Number(year))
+      .maybeSingle<Pick<TaxYear, "id">>();
+
+    if (taxYearError) {
+      setErrorMessage("Steuerjahr konnte nicht geladen werden.");
+      setRows([]);
+      setIsLoading(false);
       return;
     }
 
-    const newPortfolio: PortfolioRow = {
-      id: `pf-${crypto.randomUUID()}`,
-      bank,
-      country,
-      accountNumber,
-      currency,
-      documentCount: 0,
-      status: "Offen",
-    };
+    if (!taxYearData) {
+      setTaxYearId(null);
+      setRows([]);
+      setIsLoading(false);
+      return;
+    }
 
-    setRows((current) => [newPortfolio, ...current]);
+    setTaxYearId(taxYearData.id);
+
+    const { data: portfolioData, error: portfolioError } = await supabase
+      .from("portfolios")
+      .select("id, bank_name, country, account_number, currency, status")
+      .eq("tax_year_id", taxYearData.id)
+      .returns<
+        Array<Pick<Portfolio, "id" | "bank_name" | "country" | "account_number" | "currency" | "status">>
+      >();
+
+    if (portfolioError) {
+      setErrorMessage("Depots konnten nicht geladen werden.");
+      setRows([]);
+      setIsLoading(false);
+      return;
+    }
+
+    const mappedRows: PortfolioRow[] = portfolioData.map((entry) => ({
+      id: entry.id,
+      bank_name: entry.bank_name,
+      country: entry.country,
+      account_number: entry.account_number,
+      currency: entry.currency,
+      documentCount: 0,
+      status: mapPortfolioStatus(entry.status),
+    }));
+
+    setRows(mappedRows);
+    setIsLoading(false);
+  }
+
+  useEffect(() => {
+    void fetchPortfolios();
+  }, [clientId, year]);
+
+  async function handleCreatePortfolio(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const bankName = form.bank_name.trim();
+    const country = form.country.trim().toUpperCase();
+    const accountNumber = form.account_number.trim();
+    const currency = form.currency.trim().toUpperCase();
+
+    if (!bankName || !country || !accountNumber || !currency || !taxYearId) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    setErrorMessage(null);
+
+    const { error } = await supabase.from("portfolios").insert({
+      tax_year_id: taxYearId,
+      bank_name: bankName,
+      country,
+      account_number: accountNumber,
+      currency,
+      status: "open",
+    });
+
+    if (error) {
+      setErrorMessage("Depot konnte nicht angelegt werden.");
+      setIsSubmitting(false);
+      return;
+    }
+
+    await fetchPortfolios();
+    setIsSubmitting(false);
     setShowModal(false);
     setForm(initialForm);
   }
@@ -96,6 +161,9 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
             <p className="mt-2 text-sm text-zinc-600">
               Verwaltung der Depots im Steuerjahr {year}.
             </p>
+            {errorMessage ? (
+              <p className="mt-2 text-sm text-red-700">{errorMessage}</p>
+            ) : null}
           </div>
           <button
             type="button"
@@ -121,11 +189,18 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200">
+            {isLoading ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-zinc-500">
+                  Depots werden geladen...
+                </td>
+              </tr>
+            ) : null}
             {rows.map((row) => (
               <tr key={row.id} className="text-zinc-700">
-                <td className="px-4 py-3 font-medium text-zinc-900">{row.bank}</td>
+                <td className="px-4 py-3 font-medium text-zinc-900">{row.bank_name}</td>
                 <td className="px-4 py-3">{row.country}</td>
-                <td className="px-4 py-3">{row.accountNumber}</td>
+                <td className="px-4 py-3">{row.account_number}</td>
                 <td className="px-4 py-3">{row.currency}</td>
                 <td className="px-4 py-3">{row.documentCount}</td>
                 <td className="px-4 py-3">{row.status}</td>
@@ -147,6 +222,13 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
                 </td>
               </tr>
             ))}
+            {!isLoading && rows.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="px-4 py-8 text-center text-zinc-500">
+                  Keine Depots für dieses Steuerjahr vorhanden.
+                </td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
       </section>
@@ -160,9 +242,9 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
                 Bank/Broker
                 <input
                   type="text"
-                  value={form.bank}
+                  value={form.bank_name}
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, bank: event.target.value }))
+                    setForm((current) => ({ ...current, bank_name: event.target.value }))
                   }
                   className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
                   required
@@ -185,11 +267,11 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
                 Depotnummer
                 <input
                   type="text"
-                  value={form.accountNumber}
+                  value={form.account_number}
                   onChange={(event) =>
                     setForm((current) => ({
                       ...current,
-                      accountNumber: event.target.value,
+                      account_number: event.target.value,
                     }))
                   }
                   className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
@@ -222,9 +304,10 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
                 </button>
                 <button
                   type="submit"
+                  disabled={isSubmitting || !taxYearId}
                   className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 hover:bg-zinc-700"
                 >
-                  Depot speichern
+                  {isSubmitting ? "Speichert..." : "Depot speichern"}
                 </button>
               </div>
             </form>

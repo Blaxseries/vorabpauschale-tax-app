@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { clients, taxFiles } from "@/lib/mock-data";
+import type { Client, TaxYear } from "@/lib/database.types";
+import { supabase } from "@/lib/supabase";
 
 type ClientYearsPageProps = {
   params: Promise<{
@@ -11,15 +12,27 @@ type ClientYearsPageProps = {
 
 export default async function ClientYearsPage({ params }: ClientYearsPageProps) {
   const { id } = await params;
-  const client = clients.find((entry) => entry.id === id);
+  const { data: client, error: clientError } = await supabase
+    .from("clients")
+    .select("id, name")
+    .eq("id", id)
+    .maybeSingle<Pick<Client, "id" | "name">>();
 
-  if (!client) {
+  if (!client || clientError) {
     notFound();
   }
 
-  const years = taxFiles
-    .filter((taxFile) => taxFile.clientId === id)
-    .sort((a, b) => b.year - a.year);
+  const { data: yearsData, error: yearsError } = await supabase
+    .from("tax_years")
+    .select("id, year")
+    .eq("client_id", id)
+    .returns<Array<Pick<TaxYear, "id" | "year">>>();
+
+  if (yearsError) {
+    notFound();
+  }
+
+  const years = [...yearsData].sort((a, b) => b.year - a.year);
 
   return (
     <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">

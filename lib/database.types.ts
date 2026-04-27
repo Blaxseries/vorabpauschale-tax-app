@@ -32,10 +32,10 @@ export interface TaxYear {
 export interface Portfolio {
   id: string;
   tax_year_id: string;
-  bank_broker: string;
-  country_code: string;
-  portfolio_number: string;
-  currency_code: string;
+  bank_name: string;
+  country: string;
+  account_number: string;
+  currency: string;
   status: "open" | "in_review" | "approved";
   created_at: string;
   updated_at: string;
