@@ -24,6 +24,20 @@ export function ClientYearNav({ clientId, year }: ClientYearNavProps) {
 
   return (
     <nav className="mb-6 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm">
+      <div className="mb-2 flex items-center justify-between border-b border-zinc-200 px-2 pb-2">
+        <Link
+          href={`/clients/${clientId}`}
+          className="rounded-md px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100"
+        >
+          ← Zur Mandantenakte
+        </Link>
+        <Link
+          href={basePath}
+          className="rounded-md px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-100"
+        >
+          ↩ Zur Jahresübersicht
+        </Link>
+      </div>
       <ul className="flex flex-wrap gap-1">
         {yearNavItems.map((item) => {
           const href = `${basePath}${item.href}`;
