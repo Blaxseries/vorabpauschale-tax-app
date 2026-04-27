@@ -47,70 +47,84 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  function mapPortfolioStatus(status: Portfolio["status"]): PortfolioStatus {
-    if (status === "approved") {
-      return "Freigegeben";
+  function toErrorMessage(prefix: string, message: string | null): string {
+    if (!message) {
+      return prefix;
     }
-    if (status === "in_review") {
-      return "In Prüfung";
-    }
-    return "Offen";
+    return `${prefix} (${message})`;
   }
 
   async function fetchPortfolios() {
     setIsLoading(true);
     setErrorMessage(null);
 
-    const { data: taxYearData, error: taxYearError } = await supabase
-      .from("tax_years")
-      .select("id")
-      .eq("client_id", clientId)
-      .eq("year", Number(year))
-      .maybeSingle<Pick<TaxYear, "id">>();
+    try {
+      const { data: taxYearData, error: taxYearError } = await supabase
+        .from("tax_years")
+        .select("id")
+        .eq("client_id", clientId)
+        .eq("year", Number(year))
+        .maybeSingle<Pick<TaxYear, "id">>();
 
-    if (taxYearError) {
-      setErrorMessage("Steuerjahr konnte nicht geladen werden.");
+      if (taxYearError) {
+        setErrorMessage(
+          toErrorMessage("Steuerjahr konnte nicht geladen werden.", taxYearError.message),
+        );
+        setRows([]);
+        setIsLoading(false);
+        return;
+      }
+
+      if (!taxYearData) {
+        setTaxYearId(null);
+        setErrorMessage("Steuerjahr nicht gefunden.");
+        setRows([]);
+        setIsLoading(false);
+        return;
+      }
+
+      setTaxYearId(taxYearData.id);
+
+      const { data: portfolioData, error: portfolioError } = await supabase
+        .from("portfolios")
+        .select("id, bank_name, country, account_number, currency")
+        .eq("tax_year_id", taxYearData.id)
+        .returns<
+          Array<
+            Pick<
+              Portfolio,
+              "id" | "bank_name" | "country" | "account_number" | "currency"
+            >
+          >
+        >();
+
+      if (portfolioError) {
+        setErrorMessage(
+          toErrorMessage("Depots konnten nicht geladen werden.", portfolioError.message),
+        );
+        setRows([]);
+        setIsLoading(false);
+        return;
+      }
+
+      const mappedRows: PortfolioRow[] = portfolioData.map((entry) => ({
+        id: entry.id,
+        bank_name: entry.bank_name,
+        country: entry.country,
+        account_number: entry.account_number,
+        currency: entry.currency,
+        documentCount: 0,
+        status: "Offen",
+      }));
+
+      setRows(mappedRows);
+      setIsLoading(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : null;
+      setErrorMessage(toErrorMessage("Depots konnten nicht geladen werden.", message));
       setRows([]);
       setIsLoading(false);
-      return;
     }
-
-    if (!taxYearData) {
-      setTaxYearId(null);
-      setRows([]);
-      setIsLoading(false);
-      return;
-    }
-
-    setTaxYearId(taxYearData.id);
-
-    const { data: portfolioData, error: portfolioError } = await supabase
-      .from("portfolios")
-      .select("id, bank_name, country, account_number, currency, status")
-      .eq("tax_year_id", taxYearData.id)
-      .returns<
-        Array<Pick<Portfolio, "id" | "bank_name" | "country" | "account_number" | "currency" | "status">>
-      >();
-
-    if (portfolioError) {
-      setErrorMessage("Depots konnten nicht geladen werden.");
-      setRows([]);
-      setIsLoading(false);
-      return;
-    }
-
-    const mappedRows: PortfolioRow[] = portfolioData.map((entry) => ({
-      id: entry.id,
-      bank_name: entry.bank_name,
-      country: entry.country,
-      account_number: entry.account_number,
-      currency: entry.currency,
-      documentCount: 0,
-      status: mapPortfolioStatus(entry.status),
-    }));
-
-    setRows(mappedRows);
-    setIsLoading(false);
   }
 
   useEffect(() => {
@@ -124,32 +138,44 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
     const accountNumber = form.account_number.trim();
     const currency = form.currency.trim().toUpperCase();
 
-    if (!bankName || !country || !accountNumber || !currency || !taxYearId) {
+    if (!bankName || !country || !accountNumber || !currency) {
+      return;
+    }
+
+    if (!taxYearId) {
+      setErrorMessage("Depot konnte nicht angelegt werden. Steuerjahr nicht gefunden.");
       return;
     }
 
     setIsSubmitting(true);
     setErrorMessage(null);
 
-    const { error } = await supabase.from("portfolios").insert({
-      tax_year_id: taxYearId,
-      bank_name: bankName,
-      country,
-      account_number: accountNumber,
-      currency,
-      status: "open",
-    });
+    try {
+      const { error } = await supabase.from("portfolios").insert({
+        tax_year_id: taxYearId,
+        bank_name: bankName,
+        country,
+        account_number: accountNumber,
+        currency,
+      });
 
-    if (error) {
-      setErrorMessage("Depot konnte nicht angelegt werden.");
+      if (error) {
+        setErrorMessage(
+          toErrorMessage("Depot konnte nicht angelegt werden.", error.message),
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
+      await fetchPortfolios();
       setIsSubmitting(false);
-      return;
+      setShowModal(false);
+      setForm(initialForm);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : null;
+      setErrorMessage(toErrorMessage("Depot konnte nicht angelegt werden.", message));
+      setIsSubmitting(false);
     }
-
-    await fetchPortfolios();
-    setIsSubmitting(false);
-    setShowModal(false);
-    setForm(initialForm);
   }
 
   return (

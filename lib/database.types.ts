@@ -36,7 +36,7 @@ export interface Portfolio {
   country: string;
   account_number: string;
   currency: string;
-  status: "open" | "in_review" | "approved";
+  status?: "open" | "in_review" | "approved";
   created_at: string;
   updated_at: string;
 }
