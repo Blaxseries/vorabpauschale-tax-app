@@ -2,37 +2,18 @@
 
 import { Fragment, useMemo, useState } from "react";
 
-type PositionStatus =
-  | "Extrahiert"
-  | "Prüfung erforderlich"
-  | "Manuell korrigiert"
-  | "Geprüft"
-  | "Freigegeben"
-  | "Gesperrt";
-
-type MovementSummary = "keine" | "Käufe" | "Verkäufe" | "Käufe und Verkäufe" | "unklar";
-type FxStatus =
-  | "vollständig"
-  | "NAV Anfang fehlt"
-  | "NAV Ende fehlt"
-  | "FX Anfang fehlt"
-  | "FX Ende fehlt"
-  | "NAV/FX unklar"
-  | "manuell prüfen";
-type TaxFundType =
-  | "Aktienfonds"
-  | "Mischfonds"
-  | "Rentenfonds"
-  | "Immobilienfonds"
-  | "Auslands-Immobilienfonds"
-  | "Sonstiger Fonds"
-  | "Unklar";
-type SourceType = "document" | "api" | "manual" | "normalized" | "unknown";
+type SourceType = "document" | "api" | "manual" | "calculated" | "unknown";
 type Confidence = "high" | "medium" | "low";
 type FieldReviewStatus = "ok" | "offen" | "warnung";
-type DocumentStatus = "vollständig" | "teilweise vollständig" | "fehlend";
-type ReviewState = "freigegeben" | "offene Punkte" | "in Prüfung";
-type CalculationState = "freigegeben" | "gesperrt" | "offen";
+type RowReviewStatus = "in Prüfung" | "geprüft" | "manuell korrigiert";
+type MovementSummary =
+  | "keine"
+  | "erstmals Vorjahr"
+  | "unterjähriger Kauf"
+  | "mehrere Käufe"
+  | "Verkauf"
+  | "Käufe und Verkäufe"
+  | "unklar";
 
 type ReviewDetailField = {
   key: string;
@@ -47,19 +28,38 @@ type ReviewDetailField = {
 
 type ReviewPosition = {
   id: string;
-  status: PositionStatus;
+  reviewStatus: RowReviewStatus;
   fundName: string;
   isin: string;
-  taxFundType: TaxFundType;
+  currency: string;
+  unitsStart: number | null;
+  movement: MovementSummary;
+  unitChange: number | null;
+  positionValueStart: number | null;
+  navStart: number | null;
+  fxStart: number | null;
+  valueStartEur: number | null;
+  unitsEnd: number | null;
+  positionValueEnd: number | null;
+  navEnd: number | null;
+  fxEnd: number | null;
+  valueEndEur: number | null;
+  hint: string;
+  sourceSummary: {
+    units: SourceType;
+    nav: SourceType;
+    fx: SourceType;
+    eur: SourceType;
+  };
   productType: string;
+  taxFundType: string;
   partialExemption: string;
-  unitsStart: number;
-  unitsEnd: number;
-  movements: MovementSummary;
-  distributionsEur: number | null;
-  distributionsState: "erfasst" | "nicht erkannt" | "unklar" | "nicht relevant";
-  fxStatus: FxStatus;
-  note: string;
+  distributions: string;
+  withholdingTax: string;
+  documentSource: string;
+  apiSource: string;
+  fxSource: string;
+  lastChangedAt: string;
   details: ReviewDetailField[];
 };
 
@@ -67,29 +67,16 @@ type PortfolioReviewBlock = {
   id: string;
   bank: string;
   label: string;
-  documentStatus: DocumentStatus;
+  openingBasis: "Vorjahresstatement" | "API" | "abgeleitet" | "fehlt";
+  closingBasis: "Jahresstatement" | "fehlt";
+  transactionsStatus: "vorhanden" | "nicht vorhanden" | "unklar";
+  distributionsStatus: "Report vorhanden" | "nicht vorhanden" | "unklar";
+  reviewStatus: "in Prüfung" | "teilweise geprüft" | "geprüft";
   positions: ReviewPosition[];
 };
 
 type ReviewTableWorkspaceProps = {
   year: string;
-};
-
-const statusStyles: Record<PositionStatus, string> = {
-  Extrahiert: "bg-blue-50 text-blue-700 border-blue-200",
-  "Prüfung erforderlich": "bg-amber-50 text-amber-700 border-amber-200",
-  "Manuell korrigiert": "bg-violet-50 text-violet-700 border-violet-200",
-  Geprüft: "bg-zinc-100 text-zinc-700 border-zinc-200",
-  Freigegeben: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  Gesperrt: "bg-red-50 text-red-700 border-red-200",
-};
-
-const movementStyles: Record<MovementSummary, string> = {
-  keine: "text-zinc-700",
-  Käufe: "font-medium text-amber-700",
-  Verkäufe: "font-medium text-amber-700",
-  "Käufe und Verkäufe": "font-medium text-amber-700",
-  unklar: "font-medium text-red-700",
 };
 
 const fieldStatusLabel: Record<FieldReviewStatus, string> = {
@@ -105,52 +92,53 @@ const confidenceLabel: Record<Confidence, string> = {
 };
 
 const sourceLabel: Record<SourceType, string> = {
-  document: "Dokument",
+  document: "Statement",
   api: "API",
-  manual: "Manuell",
-  normalized: "Normalisiert",
-  unknown: "Unbekannt",
+  manual: "manuell",
+  calculated: "abgeleitet",
+  unknown: "fehlt",
 };
-
-const fxStyles: Record<FxStatus, string> = {
-  vollständig: "text-emerald-700",
-  "NAV Anfang fehlt": "font-medium text-red-700",
-  "NAV Ende fehlt": "font-medium text-red-700",
-  "FX Anfang fehlt": "font-medium text-red-700",
-  "FX Ende fehlt": "font-medium text-red-700",
-  "NAV/FX unklar": "font-medium text-red-700",
-  "manuell prüfen": "font-medium text-amber-700",
-};
-
-const metaBadgeStyles = {
-  neutral: "border-zinc-200 bg-zinc-50 text-zinc-700",
-  success: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  warning: "border-amber-200 bg-amber-50 text-amber-700",
-  danger: "border-red-200 bg-red-50 text-red-700",
-} as const;
 
 const initialBlocks: PortfolioReviewBlock[] = [
   {
     id: "pf-ubs-2025",
     bank: "UBS",
     label: "DEP-9104218",
-    documentStatus: "teilweise vollständig",
+    openingBasis: "Vorjahresstatement",
+    closingBasis: "Jahresstatement",
+    transactionsStatus: "vorhanden",
+    distributionsStatus: "nicht vorhanden",
+    reviewStatus: "in Prüfung",
     positions: [
       {
         id: "pos-001",
-        status: "Prüfung erforderlich",
+        reviewStatus: "in Prüfung",
         fundName: "Global Equity Opportunities",
         isin: "LU1234567890",
-        taxFundType: "Aktienfonds",
-        productType: "ETF",
-        partialExemption: "30 %",
+        currency: "USD",
         unitsStart: 180.5,
+        movement: "unterjähriger Kauf",
+        unitChange: 14.3,
+        positionValueStart: 18820.42,
+        navStart: 104.27,
+        fxStart: 0.915,
+        valueStartEur: 17240.35,
         unitsEnd: 194.8,
-        movements: "Käufe",
-        distributionsEur: 245.31,
-        distributionsState: "erfasst",
-        fxStatus: "FX Ende fehlt",
-        note: "FX Ende fehlt",
+        positionValueEnd: 20110.54,
+        navEnd: null,
+        fxEnd: null,
+        valueEndEur: null,
+        hint: "NAV 31.12. fehlt; FX 31.12. fehlt",
+        sourceSummary: { units: "document", nav: "api", fx: "unknown", eur: "unknown" },
+        productType: "ETF",
+        taxFundType: "Aktienfonds",
+        partialExemption: "30 %",
+        distributions: "245,31 EUR",
+        withholdingTax: "nicht verfügbar",
+        documentSource: "UBS Jahresstatement 2025",
+        apiSource: "Morningstar NAV API",
+        fxSource: "EZB Referenzkurse",
+        lastChangedAt: "27.04.2026 16:11",
         details: [
           {
             key: "1",
@@ -172,93 +160,37 @@ const initialBlocks: PortfolioReviewBlock[] = [
             manuallyChanged: false,
             reviewStatus: "ok",
           },
-          {
-            key: "3",
-            field: "Steuerliche Fondsart",
-            value: "Aktienfonds",
-            unit: "-",
-            sourceType: "normalized",
-            confidence: "medium",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-          {
-            key: "3b",
-            field: "Produkttyp",
-            value: "ETF",
-            unit: "-",
-            sourceType: "document",
-            confidence: "high",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-          {
-            key: "4",
-            field: "Teilfreistellung",
-            value: "30",
-            unit: "%",
-            sourceType: "normalized",
-            confidence: "medium",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-          {
-            key: "5",
-            field: "Anteile 01.01.",
-            value: "180.5",
-            unit: "Stk.",
-            sourceType: "document",
-            confidence: "high",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-          {
-            key: "6",
-            field: "Anteile 31.12.",
-            value: "194.8",
-            unit: "Stk.",
-            sourceType: "document",
-            confidence: "high",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-          {
-            key: "7",
-            field: "NAV/Kurs 31.12.",
-            value: "104.21",
-            unit: "USD",
-            sourceType: "api",
-            confidence: "low",
-            manuallyChanged: false,
-            reviewStatus: "offen",
-          },
-          {
-            key: "8",
-            field: "FX-Kurs Ende",
-            value: "",
-            unit: "USD/EUR",
-            sourceType: "unknown",
-            confidence: "low",
-            manuallyChanged: false,
-            reviewStatus: "warnung",
-          },
         ],
       },
       {
         id: "pos-002",
-        status: "Freigegeben",
+        reviewStatus: "geprüft",
         fundName: "Euro Bonds Income",
         isin: "IE0098765432",
-        taxFundType: "Rentenfonds",
-        productType: "Fonds",
-        partialExemption: "0 %",
+        currency: "EUR",
         unitsStart: 320,
+        movement: "keine",
+        unitChange: 0,
+        positionValueStart: 32145.22,
+        navStart: 100.45,
+        fxStart: 1,
+        valueStartEur: 32145.22,
         unitsEnd: 320,
-        movements: "keine",
-        distributionsEur: 112.4,
-        distributionsState: "erfasst",
-        fxStatus: "vollständig",
-        note: "Freigabe erfolgt",
+        positionValueEnd: 32780.4,
+        navEnd: 102.44,
+        fxEnd: 1,
+        valueEndEur: 32780.4,
+        hint: "",
+        sourceSummary: { units: "document", nav: "api", fx: "calculated", eur: "calculated" },
+        productType: "Fonds",
+        taxFundType: "Rentenfonds",
+        partialExemption: "0 %",
+        distributions: "112,40 EUR",
+        withholdingTax: "nicht relevant",
+        documentSource: "UBS Jahresstatement 2025",
+        apiSource: "Morningstar NAV API",
+        fxSource: "nicht relevant",
+        lastChangedAt: "26.04.2026 10:05",
         details: [
           {
             key: "1",
@@ -266,26 +198,6 @@ const initialBlocks: PortfolioReviewBlock[] = [
             value: "Euro Bonds Income",
             unit: "-",
             sourceType: "document",
-            confidence: "high",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-          {
-            key: "2",
-            field: "ISIN",
-            value: "IE0098765432",
-            unit: "-",
-            sourceType: "document",
-            confidence: "high",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-          {
-            key: "3",
-            field: "Ausschüttungen EUR",
-            value: "112.4",
-            unit: "EUR",
-            sourceType: "normalized",
             confidence: "high",
             manuallyChanged: false,
             reviewStatus: "ok",
@@ -298,78 +210,48 @@ const initialBlocks: PortfolioReviewBlock[] = [
     id: "pf-db-2025",
     bank: "Deutsche Bank",
     label: "DEP-7781001",
-    documentStatus: "vollständig",
+    openingBasis: "abgeleitet",
+    closingBasis: "Jahresstatement",
+    transactionsStatus: "vorhanden",
+    distributionsStatus: "Report vorhanden",
+    reviewStatus: "teilweise geprüft",
     positions: [
       {
         id: "pos-003",
-        status: "Extrahiert",
+        reviewStatus: "in Prüfung",
         fundName: "MSCI World ETF",
         isin: "IE00B4L5Y983",
-        taxFundType: "Aktienfonds",
-        productType: "ETF",
-        partialExemption: "30 %",
+        currency: "USD",
         unitsStart: 520.2,
+        movement: "mehrere Käufe",
+        unitChange: 20,
+        positionValueStart: 40810.43,
+        navStart: 78.45,
+        fxStart: 0.929,
+        valueStartEur: 37895.12,
         unitsEnd: 540.2,
-        movements: "Käufe und Verkäufe",
-        distributionsEur: null,
-        distributionsState: "unklar",
-        fxStatus: "manuell prüfen",
-        note: "Ausschüttungsstatus unklar",
+        positionValueEnd: 45120.91,
+        navEnd: 83.52,
+        fxEnd: null,
+        valueEndEur: null,
+        hint: "FX 31.12. fehlt; mehrere Käufe, Tranchendaten prüfen",
+        sourceSummary: { units: "document", nav: "api", fx: "unknown", eur: "unknown" },
+        productType: "ETF",
+        taxFundType: "Aktienfonds",
+        partialExemption: "30 %",
+        distributions: "unklar",
+        withholdingTax: "nicht geprüft",
+        documentSource: "DB Transaktionsreport 2025",
+        apiSource: "Morningstar NAV API",
+        fxSource: "EZB Referenzkurse",
+        lastChangedAt: "27.04.2026 15:42",
         details: [
           {
             key: "1",
             field: "Ausschüttungen brutto",
-            value: "",
-            unit: "USD",
-            sourceType: "document",
-            confidence: "low",
-            manuallyChanged: false,
-            reviewStatus: "offen",
-          },
-          {
-            key: "2",
-            field: "Unterjährige Käufe vorhanden",
-            value: "ja",
-            unit: "-",
-            sourceType: "normalized",
-            confidence: "medium",
-            manuallyChanged: false,
-            reviewStatus: "warnung",
-          },
-        ],
-      },
-      {
-        id: "pos-004",
-        status: "Gesperrt",
-        fundName: "Asia Growth Opportunities",
-        isin: "",
-        taxFundType: "Unklar",
-        productType: "ETF",
-        partialExemption: "30 %",
-        unitsStart: 90.1,
-        unitsEnd: 92.4,
-        movements: "unklar",
-        distributionsEur: null,
-        distributionsState: "nicht erkannt",
-        fxStatus: "NAV/FX unklar",
-        note: "ISIN fehlt, NAV/FX unklar",
-        details: [
-          {
-            key: "1",
-            field: "ISIN",
-            value: "",
-            unit: "-",
-            sourceType: "unknown",
-            confidence: "low",
-            manuallyChanged: false,
-            reviewStatus: "offen",
-          },
-          {
-            key: "2",
-            field: "Kurswährung",
             value: "unklar",
             unit: "-",
-            sourceType: "unknown",
+            sourceType: "document",
             confidence: "low",
             manuallyChanged: false,
             reviewStatus: "offen",
@@ -380,52 +262,29 @@ const initialBlocks: PortfolioReviewBlock[] = [
   },
 ];
 
-function deriveCalculable(position: ReviewPosition): boolean {
-  const isBlockedByStatus =
-    position.status === "Prüfung erforderlich" || position.status === "Gesperrt";
-  const hasIsin = position.isin.trim().length > 0;
-  const hasTaxFundType = position.taxFundType !== "Unklar";
-  const hasUnits = position.unitsStart > 0 && position.unitsEnd > 0;
-  const hasDistributionState = position.distributionsState === "erfasst";
-  const hasFxData = position.fxStatus === "vollständig";
-  const hasMovementState = position.movements !== "unklar";
-
-  return (
-    !isBlockedByStatus &&
-    hasIsin &&
-    hasTaxFundType &&
-    hasUnits &&
-    hasDistributionState &&
-    hasFxData &&
-    hasMovementState
-  );
+function formatNumber(value: number | null): string {
+  if (value === null) return "—";
+  return value.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function deriveBlockReviewStatus(positions: ReviewPosition[]): ReviewState {
-  const hasOpen = positions.some(
-    (position) =>
-      position.status === "Prüfung erforderlich" || position.status === "Extrahiert",
-  );
-  const allReleased = positions.every((position) => position.status === "Freigegeben");
-
-  if (allReleased) {
-    return "freigegeben";
-  }
-  if (hasOpen) {
-    return "offene Punkte";
-  }
-  return "in Prüfung";
+function formatAmount(value: number | null): string {
+  if (value === null) return "—";
+  return value.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function deriveBlockCalculationStatus(positions: ReviewPosition[]): CalculationState {
-  const calculableCount = positions.filter(deriveCalculable).length;
-  if (calculableCount === positions.length) {
-    return "freigegeben";
-  }
-  if (calculableCount === 0) {
-    return "gesperrt";
-  }
-  return "offen";
+function formatUnits(value: number | null): string {
+  if (value === null) return "—";
+  const asText = value.toString();
+  const decimals = asText.includes(".") ? asText.split(".")[1].length : 0;
+  const precision = Math.min(4, Math.max(2, decimals));
+  return value.toLocaleString("de-DE", {
+    minimumFractionDigits: precision,
+    maximumFractionDigits: precision,
+  });
+}
+
+function isMovementAttention(value: MovementSummary): boolean {
+  return value === "mehrere Käufe" || value === "Käufe und Verkäufe" || value === "unklar";
 }
 
 export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
@@ -435,15 +294,12 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
 
   const summary = useMemo(() => {
     const allPositions = blocks.flatMap((block) => block.positions);
+    const openCount = allPositions.filter((position) => position.hint.trim().length > 0).length;
     return {
       depotCount: blocks.length,
       positionCount: allPositions.length,
-      released: allPositions.filter((position) => position.status === "Freigegeben").length,
-      open: allPositions.filter(
-        (position) =>
-          position.status === "Prüfung erforderlich" || position.status === "Extrahiert",
-      ).length,
-      blocked: allPositions.filter((position) => position.status === "Gesperrt").length,
+      reviewed: allPositions.filter((position) => position.reviewStatus === "geprüft").length,
+      open: openCount,
     };
   }, [blocks]);
 
@@ -455,12 +311,12 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
     );
   }
 
-  function updatePositionStatus(positionId: string, status: PositionStatus) {
+  function updateRowStatus(positionId: string, status: RowReviewStatus) {
     setBlocks((current) =>
       current.map((block) => ({
         ...block,
         positions: block.positions.map((position) =>
-          position.id === positionId ? { ...position, status } : position,
+          position.id === positionId ? { ...position, reviewStatus: status } : position,
         ),
       })),
     );
@@ -474,8 +330,8 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
           position.id === positionId
             ? {
                 ...position,
-                status: "Manuell korrigiert",
-                note: "Werte wurden manuell angepasst und müssen erneut geprüft werden.",
+                reviewStatus: "manuell korrigiert",
+                hint: "manuell zu prüfen",
                 details: position.details.map((field, index) =>
                   index === 0 ? { ...field, manuallyChanged: true, sourceType: "manual" } : field,
                 ),
@@ -486,43 +342,15 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
     );
   }
 
-  function getPrimaryAction(position: ReviewPosition): {
-    label: string;
-    onClick: () => void;
-  } {
-    if (position.status === "Geprüft") {
-      return {
-        label: "Freigeben",
-        onClick: () => updatePositionStatus(position.id, "Freigegeben"),
-      };
-    }
-    if (position.status === "Freigegeben") {
-      return {
-        label: "Freigabe zurücknehmen",
-        onClick: () => updatePositionStatus(position.id, "Geprüft"),
-      };
-    }
-    if (position.status === "Gesperrt") {
-      return {
-        label: "Wert korrigieren",
-        onClick: () => markManualCorrection(position.id),
-      };
-    }
-    return {
-      label: "Prüfen",
-      onClick: () => updatePositionStatus(position.id, "Geprüft"),
-    };
-  }
-
   return (
     <div className="space-y-4">
       <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
         <h2 className="text-2xl font-semibold text-zinc-900">Prüftabelle Steuerjahr {year}</h2>
         <p className="mt-2 text-sm text-zinc-600">
-          Fachliche Gegenprüfung der extrahierten und angereicherten Fondsdaten vor der
-          Berechnung der Vorabpauschale.
+          Fachliche Gegenprüfung der extrahierten und angereicherten Depotdaten vor der
+          Berechnung.
         </p>
-        <div className="mt-4 grid gap-2 text-sm text-zinc-700 md:grid-cols-5">
+        <div className="mt-4 grid gap-2 text-sm text-zinc-700 md:grid-cols-4">
           <p>
             <span className="font-medium text-zinc-900">Depots:</span> {summary.depotCount}
           </p>
@@ -531,183 +359,139 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
             {summary.positionCount}
           </p>
           <p>
-            <span className="font-medium text-zinc-900">Freigegeben:</span> {summary.released}
+            <span className="font-medium text-zinc-900">Geprüft:</span> {summary.reviewed}
           </p>
           <p>
             <span className="font-medium text-zinc-900">Offene Prüfung:</span> {summary.open}
-          </p>
-          <p>
-            <span className="font-medium text-zinc-900">Gesperrt:</span> {summary.blocked}
           </p>
         </div>
       </section>
 
       {blocks.map((block) => {
-        const reviewStatus = deriveBlockReviewStatus(block.positions);
-        const calculationStatus = deriveBlockCalculationStatus(block.positions);
-        const openItems = block.positions.filter(
-          (position) =>
-            position.status === "Prüfung erforderlich" || position.status === "Extrahiert",
-        ).length;
-
+        const openItems = block.positions.filter((position) => position.hint.trim().length > 0).length;
         return (
-          <section
-            key={block.id}
-            className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm"
-          >
+          <section key={block.id} className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
             <div className="border-b border-zinc-200 pb-3">
               <p className="text-sm font-semibold text-zinc-900">
                 {block.bank} · {block.label} · Steuerjahr {year}
               </p>
-              <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                <span
-                  className={`rounded-md border px-2 py-1 ${block.documentStatus === "vollständig" ? metaBadgeStyles.success : metaBadgeStyles.warning}`}
-                >
-                  Dokumente: {block.documentStatus}
-                </span>
-                <span
-                  className={`rounded-md border px-2 py-1 ${reviewStatus === "freigegeben" ? metaBadgeStyles.success : reviewStatus === "offene Punkte" ? metaBadgeStyles.warning : metaBadgeStyles.neutral}`}
-                >
-                  Prüfung: {reviewStatus}
-                </span>
-                <span
-                  className={`rounded-md border px-2 py-1 ${calculationStatus === "freigegeben" ? metaBadgeStyles.success : calculationStatus === "gesperrt" ? metaBadgeStyles.danger : metaBadgeStyles.warning}`}
-                >
-                  Berechnung: {calculationStatus}
-                </span>
-                <span className={`rounded-md border px-2 py-1 ${metaBadgeStyles.neutral}`}>
-                  Positionen: {block.positions.length}
-                </span>
-                <span
-                  className={`rounded-md border px-2 py-1 ${openItems === 0 ? metaBadgeStyles.success : metaBadgeStyles.warning}`}
-                >
-                  Offene Punkte: {openItems}
-                </span>
+              <div className="mt-2 grid gap-1 text-xs text-zinc-600 md:grid-cols-2 lg:grid-cols-6">
+                <p>Anfangsbestand: {block.openingBasis}</p>
+                <p>Endbestand: {block.closingBasis}</p>
+                <p>Transaktionen: {block.transactionsStatus}</p>
+                <p>Ausschüttungen: {block.distributionsStatus}</p>
+                <p>Status: {block.reviewStatus}</p>
+                <p className={openItems > 0 ? "text-amber-700" : "text-zinc-600"}>
+                  Offene Werte: {openItems}
+                </p>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100">Daten aktualisieren</button>
+                <button type="button" className="rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100">Depot prüfen</button>
+                <button type="button" className="rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100">Export Prüftabelle</button>
               </div>
             </div>
 
             <div className="mt-3 overflow-x-auto">
-              <table className="min-w-full divide-y divide-zinc-200 text-sm">
+              <table className="min-w-[1800px] divide-y divide-zinc-200 text-sm">
                 <thead className="bg-zinc-50 text-left text-zinc-600">
                   <tr>
-                    <th className="px-3 py-2 font-medium">Status</th>
-                    <th className="px-3 py-2 font-medium">Fonds</th>
-                    <th className="px-3 py-2 font-medium">ISIN</th>
-                    <th className="px-3 py-2 font-medium">Steuerliche Fondsart</th>
-                    <th className="px-3 py-2 font-medium">Teilfreistellung</th>
-                    <th className="px-3 py-2 font-medium">Anteile</th>
-                    <th className="px-3 py-2 font-medium">Bewegungen</th>
-                    <th className="px-3 py-2 font-medium">Ausschüttungen</th>
-                    <th className="px-3 py-2 font-medium">Kurs/FX</th>
-                    <th className="px-3 py-2 font-medium">Berechnungsfähig</th>
-                    <th className="px-3 py-2 font-medium">Hinweis</th>
+                    <th colSpan={3} className="px-3 py-2 text-xs font-semibold uppercase tracking-wide">
+                      Fondsdaten
+                    </th>
+                    <th colSpan={4} className="px-3 py-2 text-xs font-semibold uppercase tracking-wide">
+                      Bestand
+                    </th>
+                    <th colSpan={4} className="px-3 py-2 text-xs font-semibold uppercase tracking-wide">
+                      Jahresbeginn
+                    </th>
+                    <th colSpan={4} className="px-3 py-2 text-xs font-semibold uppercase tracking-wide">
+                      Jahresende
+                    </th>
+                    <th colSpan={2} className="px-3 py-2 text-xs font-semibold uppercase tracking-wide">
+                      Prüfung
+                    </th>
+                  </tr>
+                  <tr>
+                    <th className="sticky left-0 z-10 bg-zinc-50 px-3 py-2 font-medium">Fondsname</th>
+                    <th className="sticky left-[220px] z-10 bg-zinc-50 px-3 py-2 font-medium">ISIN</th>
+                    <th className="sticky left-[360px] z-10 bg-zinc-50 px-3 py-2 font-medium">Währung</th>
+                    <th className="px-3 py-2 font-medium">Anteile 01.01.</th>
+                    <th className="px-3 py-2 font-medium">Erwerb/Bewegung im Jahr</th>
+                    <th className="px-3 py-2 font-medium">Veränderung Anteile</th>
+                    <th className="px-3 py-2 font-medium">Anteile 31.12.</th>
+                    <th className="px-3 py-2 font-medium">NAV je Anteil 01.01.</th>
+                    <th className="px-3 py-2 font-medium">Wert 01.01. FW</th>
+                    <th className="px-3 py-2 font-medium">FX 01.01.</th>
+                    <th className="px-3 py-2 font-medium">Wert 01.01. EUR</th>
+                    <th className="px-3 py-2 font-medium">NAV je Anteil 31.12.</th>
+                    <th className="px-3 py-2 font-medium">Wert 31.12. FW</th>
+                    <th className="px-3 py-2 font-medium">FX 31.12.</th>
+                    <th className="px-3 py-2 font-medium">Wert 31.12. EUR</th>
+                    <th className="px-3 py-2 font-medium">Prüfhinweis</th>
                     <th className="px-3 py-2 font-medium">Aktion</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200">
                   {block.positions.map((position) => {
                     const isExpanded = expandedPositionIds.includes(position.id);
-                    const calculable = deriveCalculable(position);
-                    const primaryAction = getPrimaryAction(position);
-
                     return (
                       <Fragment key={position.id}>
-                        <tr key={position.id} className="align-top text-zinc-700">
+                        <tr className="align-top text-zinc-700">
+                          <td className="sticky left-0 z-[1] w-[220px] bg-white px-3 py-3 font-medium text-zinc-900">
+                            <p>{position.fundName}</p>
+                            <p className="mt-0.5 text-xs text-zinc-500">{position.reviewStatus}</p>
+                          </td>
+                          <td className="sticky left-[220px] z-[1] w-[140px] bg-white px-3 py-3">{position.isin || "—"}</td>
+                          <td className="sticky left-[360px] z-[1] w-[90px] bg-white px-3 py-3">{position.currency}</td>
+                          <td className="px-3 py-3 text-right">
+                            <div>{formatUnits(position.unitsStart)}</div>
+                            <div className="text-xs text-zinc-500">{sourceLabel[position.sourceSummary.units]}</div>
+                          </td>
+                          <td className={`px-3 py-3 ${isMovementAttention(position.movement) ? "text-amber-700" : "text-zinc-700"}`}>{position.movement}</td>
+                          <td className="px-3 py-3 text-right">{formatUnits(position.unitChange)}</td>
+                          <td className="px-3 py-3 text-right">{formatUnits(position.unitsEnd)}</td>
+                          <td className="px-3 py-3 text-right">
+                            <div>{formatAmount(position.navStart)}</div>
+                            <div className="text-xs text-zinc-500">{sourceLabel[position.sourceSummary.nav]}</div>
+                          </td>
+                          <td className="px-3 py-3 text-right">{formatAmount(position.positionValueStart)}</td>
+                          <td className="px-3 py-3 text-right">
+                            <div>{formatNumber(position.fxStart)}</div>
+                            <div className="text-xs text-zinc-500">{position.fxStart === null ? "fehlt" : "FX/API"}</div>
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <div>{formatAmount(position.valueStartEur)}</div>
+                            <div className="text-xs text-zinc-500">{sourceLabel[position.sourceSummary.eur]}</div>
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <div>{formatAmount(position.navEnd)}</div>
+                            <div className="text-xs text-zinc-500">{sourceLabel[position.sourceSummary.nav]}</div>
+                          </td>
+                          <td className="px-3 py-3 text-right">{formatAmount(position.positionValueEnd)}</td>
+                          <td className="px-3 py-3 text-right">
+                            <div>{formatNumber(position.fxEnd)}</div>
+                            <div className="text-xs text-zinc-500">{position.fxEnd === null ? "fehlt" : "FX/API"}</div>
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <div>{formatAmount(position.valueEndEur)}</div>
+                            <div className="text-xs text-zinc-500">{sourceLabel[position.sourceSummary.eur]}</div>
+                          </td>
+                          <td className={`px-3 py-3 ${position.hint.includes("fehlt") ? "text-red-700" : position.hint ? "text-amber-700" : "text-zinc-500"}`}>{position.hint || "nicht geprüft"}</td>
                           <td className="px-3 py-3">
-                            <span className={`rounded-md border px-2 py-1 text-xs font-medium ${statusStyles[position.status]}`}>
-                              {position.status}
-                            </span>
-                          </td>
-                          <td className="px-3 py-3 font-medium text-zinc-900">{position.fundName}</td>
-                          <td className="px-3 py-3">{position.isin || "fehlt"}</td>
-                          <td className="px-3 py-3">{position.taxFundType}</td>
-                          <td className="px-3 py-3">{position.partialExemption}</td>
-                          <td className="px-3 py-3 text-xs">
-                            <p>01.01.: {position.unitsStart.toFixed(2)}</p>
-                            <p>31.12.: {position.unitsEnd.toFixed(2)}</p>
-                          </td>
-                          <td className={`px-3 py-3 ${movementStyles[position.movements]}`}>
-                            {position.movements}
-                          </td>
-                          <td className="px-3 py-3">
-                            {position.distributionsEur !== null
-                              ? `${position.distributionsEur.toFixed(2)} EUR`
-                              : position.distributionsState}
-                          </td>
-                          <td className={`px-3 py-3 ${fxStyles[position.fxStatus]}`}>
-                            {position.fxStatus}
-                          </td>
-                          <td className="px-3 py-3">
-                            {calculable ? (
-                              <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
-                                ja
-                              </span>
-                            ) : (
-                              <span className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-medium text-red-700">
-                                nein
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-3 py-3">{position.note || "nicht geprüft"}</td>
-                          <td className="px-3 py-3">
-                            <div className="flex flex-nowrap items-center gap-1">
-                              <button
-                                type="button"
-                                onClick={() => toggleExpanded(position.id)}
-                                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
-                              >
+                            <div className="relative flex flex-nowrap items-center gap-1">
+                              <button type="button" onClick={() => toggleExpanded(position.id)} className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100">
                                 Details
                               </button>
-                              <button
-                                type="button"
-                                onClick={primaryAction.onClick}
-                                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
-                              >
-                                {primaryAction.label}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setOpenMenuId((current) =>
-                                    current === position.id ? null : position.id,
-                                  )
-                                }
-                                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
-                              >
+                              <button type="button" onClick={() => setOpenMenuId((current) => (current === position.id ? null : position.id))} className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100">
                                 ⋯
                               </button>
                               {openMenuId === position.id ? (
-                                <div className="absolute z-10 mt-24 rounded-md border border-zinc-200 bg-white p-1 shadow-md">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      markManualCorrection(position.id);
-                                      setOpenMenuId(null);
-                                    }}
-                                    className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100"
-                                  >
-                                    Wert korrigieren
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      updatePositionStatus(position.id, "Prüfung erforderlich");
-                                      setOpenMenuId(null);
-                                    }}
-                                    className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100"
-                                  >
-                                    Prüfung zurücknehmen
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      updatePositionStatus(position.id, "Geprüft");
-                                      setOpenMenuId(null);
-                                    }}
-                                    className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100"
-                                  >
-                                    Freigabe zurücknehmen
-                                  </button>
+                                <div className="absolute right-0 top-7 z-10 rounded-md border border-zinc-200 bg-white p-1 shadow-md">
+                                  <button type="button" onClick={() => { markManualCorrection(position.id); setOpenMenuId(null); }} className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100">Wert korrigieren</button>
+                                  <button type="button" onClick={() => { updateRowStatus(position.id, "geprüft"); setOpenMenuId(null); }} className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100">Zeile als geprüft markieren</button>
+                                  <button type="button" onClick={() => { updateRowStatus(position.id, "in Prüfung"); setOpenMenuId(null); }} className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100">Prüfung zurücknehmen</button>
+                                  <button type="button" onClick={() => setOpenMenuId(null)} className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100">Quelle anzeigen</button>
                                 </div>
                               ) : null}
                             </div>
@@ -715,7 +499,7 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
                         </tr>
                         {isExpanded ? (
                           <tr className="bg-zinc-50">
-                            <td colSpan={13} className="px-3 py-3">
+                            <td colSpan={17} className="px-3 py-3">
                               <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white">
                                 <table className="min-w-full divide-y divide-zinc-200 text-xs">
                                   <thead className="bg-zinc-50 text-left text-zinc-600">
@@ -733,33 +517,23 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
                                     {position.details.map((detail) => (
                                       <tr key={detail.key} className="text-zinc-700">
                                         <td className="px-3 py-2">{detail.field}</td>
-                                        <td className="px-3 py-2">
-                                          {detail.value || "Daten fehlen"}
-                                        </td>
+                                        <td className="px-3 py-2">{detail.value || "fehlt"}</td>
                                         <td className="px-3 py-2">{detail.unit}</td>
-                                        <td className="px-3 py-2">
-                                          {sourceLabel[detail.sourceType]}
-                                        </td>
-                                        <td className="px-3 py-2">
-                                          {confidenceLabel[detail.confidence]}
-                                        </td>
-                                        <td className="px-3 py-2">
-                                          {detail.manuallyChanged ? "ja" : "nein"}
-                                        </td>
-                                        <td className="px-3 py-2">
-                                          {fieldStatusLabel[detail.reviewStatus]}
-                                        </td>
+                                        <td className="px-3 py-2">{sourceLabel[detail.sourceType]}</td>
+                                        <td className="px-3 py-2">{confidenceLabel[detail.confidence]}</td>
+                                        <td className="px-3 py-2">{detail.manuallyChanged ? "ja" : "nein"}</td>
+                                        <td className="px-3 py-2">{fieldStatusLabel[detail.reviewStatus]}</td>
                                       </tr>
                                     ))}
-                                    <tr className="text-zinc-700">
-                                      <td className="px-3 py-2">Produkttyp</td>
-                                      <td className="px-3 py-2">{position.productType}</td>
-                                      <td className="px-3 py-2">-</td>
-                                      <td className="px-3 py-2">Dokument</td>
-                                      <td className="px-3 py-2">hoch</td>
-                                      <td className="px-3 py-2">nein</td>
-                                      <td className="px-3 py-2">Geprüft</td>
-                                    </tr>
+                                    <tr className="text-zinc-700"><td className="px-3 py-2">Produkttyp</td><td className="px-3 py-2">{position.productType}</td><td className="px-3 py-2">-</td><td className="px-3 py-2">Dok.</td><td className="px-3 py-2">hoch</td><td className="px-3 py-2">nein</td><td className="px-3 py-2">Geprüft</td></tr>
+                                    <tr className="text-zinc-700"><td className="px-3 py-2">Steuerliche Fondsart</td><td className="px-3 py-2">{position.taxFundType}</td><td className="px-3 py-2">-</td><td className="px-3 py-2">Calc</td><td className="px-3 py-2">mittel</td><td className="px-3 py-2">nein</td><td className="px-3 py-2">Geprüft</td></tr>
+                                    <tr className="text-zinc-700"><td className="px-3 py-2">Teilfreistellung</td><td className="px-3 py-2">{position.partialExemption}</td><td className="px-3 py-2">%</td><td className="px-3 py-2">Calc</td><td className="px-3 py-2">mittel</td><td className="px-3 py-2">nein</td><td className="px-3 py-2">Geprüft</td></tr>
+                                    <tr className="text-zinc-700"><td className="px-3 py-2">Ausschüttungen</td><td className="px-3 py-2">{position.distributions}</td><td className="px-3 py-2">-</td><td className="px-3 py-2">Dok.</td><td className="px-3 py-2">mittel</td><td className="px-3 py-2">nein</td><td className="px-3 py-2">In Prüfung</td></tr>
+                                    <tr className="text-zinc-700"><td className="px-3 py-2">Quellensteuer</td><td className="px-3 py-2">{position.withholdingTax}</td><td className="px-3 py-2">-</td><td className="px-3 py-2">Dok.</td><td className="px-3 py-2">niedrig</td><td className="px-3 py-2">nein</td><td className="px-3 py-2">In Prüfung</td></tr>
+                                    <tr className="text-zinc-700"><td className="px-3 py-2">Dokumentenquelle</td><td className="px-3 py-2">{position.documentSource}</td><td className="px-3 py-2">-</td><td className="px-3 py-2">Dok.</td><td className="px-3 py-2">hoch</td><td className="px-3 py-2">nein</td><td className="px-3 py-2">Geprüft</td></tr>
+                                    <tr className="text-zinc-700"><td className="px-3 py-2">API-Quelle</td><td className="px-3 py-2">{position.apiSource}</td><td className="px-3 py-2">-</td><td className="px-3 py-2">API</td><td className="px-3 py-2">mittel</td><td className="px-3 py-2">nein</td><td className="px-3 py-2">In Prüfung</td></tr>
+                                    <tr className="text-zinc-700"><td className="px-3 py-2">Wechselkursquelle</td><td className="px-3 py-2">{position.fxSource}</td><td className="px-3 py-2">-</td><td className="px-3 py-2">API</td><td className="px-3 py-2">mittel</td><td className="px-3 py-2">nein</td><td className="px-3 py-2">In Prüfung</td></tr>
+                                    <tr className="text-zinc-700"><td className="px-3 py-2">Änderungszeitpunkt</td><td className="px-3 py-2">{position.lastChangedAt}</td><td className="px-3 py-2">-</td><td className="px-3 py-2">System</td><td className="px-3 py-2">hoch</td><td className="px-3 py-2">-</td><td className="px-3 py-2">Protokolliert</td></tr>
                                   </tbody>
                                 </table>
                               </div>
