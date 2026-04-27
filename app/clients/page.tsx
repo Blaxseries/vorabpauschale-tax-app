@@ -47,52 +47,32 @@ export default function ClientsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  async function fetchClients(options?: { keepLoadingState?: boolean }) {
+  function toErrorMessage(prefix: string, message: string | null): string {
+    if (!message) {
+      return prefix;
+    }
+    return `${prefix} (${message})`;
+  }
+
+  async function fetchClients(options?: {
+    keepLoadingState?: boolean;
+    onSuccess?: (rows: ClientRecord[]) => void;
+  }) {
     if (!options?.keepLoadingState) {
       setIsLoading(true);
     }
     setErrorMessage(null);
 
-    const { data, error } = await supabase
-      .from("clients")
-      .select("id, name, client_number, tax_number, country, created_at, updated_at")
-      .returns<ClientsTableRow[]>();
-
-    if (error) {
-      setErrorMessage("Mandanten konnten nicht geladen werden.");
-      setIsLoading(false);
-      return;
-    }
-
-    const mappedClients: ClientRecord[] = data.map((row) => ({
-      id: row.id,
-      name: row.name,
-      client_number: row.client_number,
-      tax_number: row.tax_number,
-      country: row.country,
-      status: "Aktiv",
-      updated_at: row.updated_at ?? row.created_at,
-    }));
-
-    setClientRows(mappedClients);
-    setIsLoading(false);
-  }
-
-  useEffect(() => {
-    let active = true;
-
-    async function loadClientsOnMount() {
+    try {
       const { data, error } = await supabase
         .from("clients")
         .select("id, name, client_number, tax_number, country, created_at, updated_at")
         .returns<ClientsTableRow[]>();
 
-      if (!active) {
-        return;
-      }
-
       if (error) {
-        setErrorMessage("Mandanten konnten nicht geladen werden.");
+        setErrorMessage(
+          toErrorMessage("Mandanten konnten nicht geladen werden.", error.message),
+        );
         setIsLoading(false);
         return;
       }
@@ -107,11 +87,29 @@ export default function ClientsPage() {
         updated_at: row.updated_at ?? row.created_at,
       }));
 
-      setClientRows(mappedClients);
+      if (options?.onSuccess) {
+        options.onSuccess(mappedClients);
+      } else {
+        setClientRows(mappedClients);
+      }
+      setIsLoading(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : null;
+      setErrorMessage(toErrorMessage("Mandanten konnten nicht geladen werden.", message));
       setIsLoading(false);
     }
+  }
 
-    void loadClientsOnMount();
+  useEffect(() => {
+    let active = true;
+    void fetchClients({
+      onSuccess: (mappedClients) => {
+        if (!active) {
+          return;
+        }
+        setClientRows(mappedClients);
+      },
+    });
 
     return () => {
       active = false;
@@ -157,23 +155,29 @@ export default function ClientsPage() {
     setIsSubmitting(true);
     setErrorMessage(null);
 
-    const { error } = await supabase.from("clients").insert({
-      name,
-      client_number: clientNumber,
-      tax_number: taxNumber,
-      country,
-    });
+    try {
+      const { error } = await supabase.from("clients").insert({
+        name,
+        client_number: clientNumber,
+        tax_number: taxNumber,
+        country,
+      });
 
-    if (error) {
-      setErrorMessage("Mandant konnte nicht angelegt werden.");
+      if (error) {
+        setErrorMessage(toErrorMessage("Mandant konnte nicht angelegt werden.", error.message));
+        setIsSubmitting(false);
+        return;
+      }
+
+      await fetchClients({ keepLoadingState: true });
       setIsSubmitting(false);
-      return;
+      setShowCreateModal(false);
+      setForm(emptyForm);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : null;
+      setErrorMessage(toErrorMessage("Mandant konnte nicht angelegt werden.", message));
+      setIsSubmitting(false);
     }
-
-    await fetchClients({ keepLoadingState: true });
-    setIsSubmitting(false);
-    setShowCreateModal(false);
-    setForm(emptyForm);
   }
 
   return (
