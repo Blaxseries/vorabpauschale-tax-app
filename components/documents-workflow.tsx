@@ -147,25 +147,26 @@ export function DocumentsWorkflow({
 
   return (
     <div className="space-y-4">
-      <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
-        <h2 className="text-xl font-semibold text-zinc-900">Workflow</h2>
-        <div className="mt-4 grid gap-2 md:grid-cols-5">
+      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-700">
+          Workflow-Status
+        </h2>
+        <div className="mt-3 flex flex-wrap gap-2">
           {workflowSteps.map((step, index) => {
             const done = stepState[index];
 
             return (
-              <div
+              <span
                 key={step}
                 className={[
-                  "rounded-lg border px-3 py-3 text-sm",
+                  "rounded-full border px-3 py-1.5 text-xs",
                   done
-                    ? "border-zinc-900 bg-zinc-900 text-zinc-50"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
                     : "border-zinc-200 bg-zinc-50 text-zinc-600",
                 ].join(" ")}
               >
-                <p className="text-xs uppercase tracking-wide">Schritt {index + 1}</p>
-                <p className="mt-1 font-medium">{step}</p>
-              </div>
+                {index + 1}. {step}
+              </span>
             );
           })}
         </div>
@@ -212,7 +213,7 @@ export function DocumentsWorkflow({
                 <th className="px-3 py-2 font-medium">Datei</th>
                 <th className="px-3 py-2 font-medium">Depot</th>
                 <th className="px-3 py-2 font-medium">Typ</th>
-                <th className="px-3 py-2 font-medium">Upload Datum</th>
+                <th className="px-3 py-2 font-medium">Upload-Datum</th>
                 <th className="px-3 py-2 font-medium">Status</th>
                 <th className="px-3 py-2 font-medium">Aktion</th>
               </tr>

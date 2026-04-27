@@ -17,7 +17,7 @@ export default async function YearAuditLogPage({ params }: YearAuditLogPageProps
         <h2 className="text-2xl font-semibold text-zinc-900">Prüfprotokoll</h2>
         <ul className="mt-4 space-y-2 text-sm text-zinc-700">
           <li>08.01.{year}: Dokumentenimport validiert</li>
-          <li>11.01.{year}: Fondsdaten plausibilisiert</li>
+          <li>11.01.{year}: Prüftabelle plausibilisiert</li>
           <li>15.01.{year}: Berechnung fachlich freigegeben</li>
         </ul>
       </section>

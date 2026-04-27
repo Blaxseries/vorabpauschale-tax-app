@@ -12,7 +12,7 @@ const yearNavItems = [
   { label: "Übersicht", href: "" },
   { label: "Depots", href: "/portfolios" },
   { label: "Dokumente", href: "/documents" },
-  { label: "Fondsdaten", href: "/fund-data" },
+  { label: "Prüftabelle", href: "/review-table" },
   { label: "Berechnung", href: "/calculation" },
   { label: "Export", href: "/export" },
   { label: "Prüfprotokoll", href: "/audit-log" },
