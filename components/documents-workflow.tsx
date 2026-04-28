@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+import { supabase } from "@/lib/supabase";
 
 type PortfolioOption = {
   id: string;
@@ -40,46 +42,87 @@ const statusStyle: Record<DocumentStatus, string> = {
 };
 
 type DocumentsWorkflowProps = {
-  year: string;
+  clientId: string;
+  taxYearId: string;
   portfolioOptions: PortfolioOption[];
 };
 
 export function DocumentsWorkflow({
-  year,
+  clientId,
+  taxYearId,
   portfolioOptions,
 }: DocumentsWorkflowProps) {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState(
     portfolioOptions[0]?.id ?? "",
   );
-  const [rows, setRows] = useState<DocumentRow[]>([
-    {
-      id: "doc-001",
-      fileName: "Kontoauszug_Q1_2026.pdf",
-      portfolioId: portfolioOptions[0]?.id ?? "",
-      documentType: "Kontoauszug",
-      uploadedAt: `12.02.${year}`,
-      status: "Freigegeben",
-    },
-    {
-      id: "doc-002",
-      fileName: "Transaktionen_Maerz_2026.csv",
-      portfolioId: portfolioOptions[1]?.id ?? portfolioOptions[0]?.id ?? "",
-      documentType: "Transaktionsliste",
-      uploadedAt: `20.03.${year}`,
-      status: "Prüfung erforderlich",
-    },
-    {
-      id: "doc-003",
-      fileName: "Depotreport_042026.xlsx",
-      portfolioId: portfolioOptions[0]?.id ?? "",
-      documentType: "Depotreport",
-      uploadedAt: `05.04.${year}`,
-      status: "Extraktion läuft",
-    },
-  ]);
+  const [rows, setRows] = useState<DocumentRow[]>([]);
   const [fileRenameDrafts, setFileRenameDrafts] = useState<Record<string, string>>({});
   const [pendingUploadName, setPendingUploadName] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isLoadingRows, setIsLoadingRows] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  type StatementRow = {
+    id: string;
+    portfolio_id: string | null;
+    display_name: string;
+    original_filename: string;
+    upload_status: string;
+    uploaded_at: string;
+    document_type: string | null;
+  };
+
+  function mapUploadStatus(status: string): DocumentStatus {
+    if (status === "uploaded") return "Hochgeladen";
+    if (status === "processing") return "Extraktion läuft";
+    if (status === "needs_review") return "Prüfung erforderlich";
+    if (status === "approved") return "Freigegeben";
+    return "Fehler";
+  }
+
+  async function loadRows() {
+    setIsLoadingRows(true);
+    setErrorMessage(null);
+    const portfolioIds = portfolioOptions.map((portfolio) => portfolio.id);
+    if (portfolioIds.length === 0) {
+      setRows([]);
+      setIsLoadingRows(false);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("statement_uploads")
+      .select(
+        "id, portfolio_id, display_name, original_filename, upload_status, uploaded_at, document_type",
+      )
+      .in("portfolio_id", portfolioIds)
+      .returns<StatementRow[]>();
+
+    if (error) {
+      console.error("Fehler beim Laden der Dokumentenübersicht:", error);
+      setErrorMessage(`Dokumente konnten nicht geladen werden: ${error.message}`);
+      setRows([]);
+      setIsLoadingRows(false);
+      return;
+    }
+
+    const mappedRows: DocumentRow[] = data.map((entry) => ({
+      id: entry.id,
+      fileName: entry.display_name || entry.original_filename,
+      portfolioId: entry.portfolio_id ?? "",
+      documentType: entry.document_type ?? "Upload",
+      uploadedAt: new Date(entry.uploaded_at).toLocaleDateString("de-DE"),
+      status: mapUploadStatus(entry.upload_status),
+    }));
+
+    setRows(mappedRows);
+    setIsLoadingRows(false);
+  }
+
+  useEffect(() => {
+    void loadRows();
+  }, [clientId, taxYearId, portfolioOptions]);
 
   function getPortfolioLabel(portfolioId: string): string {
     return (
@@ -95,25 +138,75 @@ export function DocumentsWorkflow({
     setSelectedFiles(Array.from(files));
   }
 
-  function handleUploadSubmit() {
+  async function handleUploadSubmit() {
     if (selectedFiles.length === 0 || !selectedPortfolioId) {
       return;
     }
 
-    const now = new Date();
-    const dateLabel = now.toLocaleDateString("de-DE");
-    const newRows: DocumentRow[] = selectedFiles.map((file, index) => ({
-      id: `doc-${crypto.randomUUID()}`,
-      fileName: index === 0 && pendingUploadName.trim() ? pendingUploadName.trim() : file.name,
-      portfolioId: selectedPortfolioId,
-      documentType: "Upload",
-      uploadedAt: dateLabel,
-      status: "Hochgeladen",
-    }));
+    setIsUploading(true);
+    setErrorMessage(null);
 
-    setRows((current) => [...newRows, ...current]);
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    for (const [index, file] of selectedFiles.entries()) {
+      const documentId = crypto.randomUUID();
+      const displayName =
+        index === 0 && pendingUploadName.trim() ? pendingUploadName.trim() : file.name;
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const storagePath =
+        `portfolios/${selectedPortfolioId}/uploads/` +
+        `${documentId}-${safeName}`;
+
+      const { error: storageError } = await supabase.storage
+        .from("raw-documents")
+        .upload(storagePath, file, { upsert: false, contentType: file.type });
+
+      if (storageError) {
+        console.error("Fehler beim Storage-Upload:", storageError);
+        setErrorMessage(`Storage-Upload fehlgeschlagen: ${storageError.message}`);
+        continue;
+      }
+
+      const { error: insertError } = await supabase.from("statement_uploads").insert({
+        id: documentId,
+        client_id: clientId,
+        tax_year_id: taxYearId,
+        portfolio_id: selectedPortfolioId,
+        display_name: displayName,
+        file_name: displayName,
+        original_filename: file.name,
+        storage_bucket: "raw-documents",
+        storage_path: storagePath,
+        mime_type: file.type || "application/octet-stream",
+        file_size_bytes: file.size,
+        status: "uploaded",
+        upload_status: "uploaded",
+        anonymization_status: "not_started",
+        extraction_status: "not_started",
+        uploaded_at: new Date().toISOString(),
+        uploaded_by: user?.id ?? null,
+        document_type: "Upload",
+      });
+
+      if (insertError) {
+        console.error("Fehler beim Tabelleninsert:", insertError);
+        setErrorMessage(`Metadaten konnten nicht gespeichert werden: ${insertError.message}`);
+
+        const { error: rollbackError } = await supabase.storage
+          .from("raw-documents")
+          .remove([storagePath]);
+        if (rollbackError) {
+          console.error("Fehler beim Storage-Rollback:", rollbackError);
+        }
+      }
+    }
+
     setPendingUploadName("");
     setSelectedFiles([]);
+    setIsUploading(false);
+    await loadRows();
   }
 
   const selectedFileLabel =
@@ -158,6 +251,11 @@ export function DocumentsWorkflow({
       <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-zinc-900">Upload</h3>
         <p className="mt-1 text-sm text-zinc-600">Akzeptierte Formate: PDF, XLSX, CSV</p>
+        {errorMessage ? (
+          <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {errorMessage}
+          </p>
+        ) : null}
         <div className="mt-4 grid gap-3 lg:grid-cols-4">
           <label className="text-sm text-zinc-700">
             Depot auswählen
@@ -198,9 +296,10 @@ export function DocumentsWorkflow({
             <button
               type="button"
               onClick={handleUploadSubmit}
+              disabled={isUploading}
               className="mt-3 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 hover:bg-zinc-700"
             >
-              Dokumente übernehmen
+              {isUploading ? "Upload läuft..." : "Dokumente übernehmen"}
             </button>
           </div>
         </div>
@@ -221,6 +320,13 @@ export function DocumentsWorkflow({
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200">
+              {isLoadingRows ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-6 text-center text-zinc-500">
+                    Dokumentenübersicht wird geladen...
+                  </td>
+                </tr>
+              ) : null}
               {rows.map((row) => (
                 <tr key={row.id} className="text-zinc-700">
                   <td className="px-3 py-3">{row.fileName}</td>
@@ -278,7 +384,7 @@ export function DocumentsWorkflow({
                   </td>
                 </tr>
               ))}
-              {rows.length === 0 ? (
+              {!isLoadingRows && rows.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-3 py-6 text-center text-zinc-500">
                     Keine Dokumente vorhanden.
