@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 type PortfolioOption = {
   id: string;
@@ -22,14 +22,6 @@ type DocumentRow = {
   uploadedAt: string;
   status: DocumentStatus;
 };
-
-const workflowSteps = [
-  "Upload",
-  "Extraktion",
-  "Prüfung",
-  "Freigabe",
-  "Berechnung",
-] as const;
 
 const statusCycle: DocumentStatus[] = [
   "Hochgeladen",
@@ -85,21 +77,9 @@ export function DocumentsWorkflow({
       status: "Extraktion läuft",
     },
   ]);
-
-  const stepState = useMemo(() => {
-    const hasUpload = rows.length > 0;
-    const hasExtraction = rows.some((row) =>
-      ["Extraktion läuft", "Prüfung erforderlich", "Freigegeben"].includes(
-        row.status,
-      ),
-    );
-    const hasReview = rows.some((row) =>
-      ["Prüfung erforderlich", "Freigegeben"].includes(row.status),
-    );
-    const hasApproval = rows.some((row) => row.status === "Freigegeben");
-
-    return [hasUpload, hasExtraction, hasReview, hasApproval, hasApproval];
-  }, [rows]);
+  const [fileRenameDrafts, setFileRenameDrafts] = useState<Record<string, string>>({});
+  const [pendingUploadName, setPendingUploadName] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   function getPortfolioLabel(portfolioId: string): string {
     return (
@@ -109,15 +89,22 @@ export function DocumentsWorkflow({
   }
 
   function handleFileSelection(files: FileList | null) {
-    if (!files || files.length === 0 || !selectedPortfolioId) {
+    if (!files || files.length === 0) {
+      return;
+    }
+    setSelectedFiles(Array.from(files));
+  }
+
+  function handleUploadSubmit() {
+    if (selectedFiles.length === 0 || !selectedPortfolioId) {
       return;
     }
 
     const now = new Date();
     const dateLabel = now.toLocaleDateString("de-DE");
-    const newRows: DocumentRow[] = Array.from(files).map((file) => ({
+    const newRows: DocumentRow[] = selectedFiles.map((file, index) => ({
       id: `doc-${crypto.randomUUID()}`,
-      fileName: file.name,
+      fileName: index === 0 && pendingUploadName.trim() ? pendingUploadName.trim() : file.name,
       portfolioId: selectedPortfolioId,
       documentType: "Upload",
       uploadedAt: dateLabel,
@@ -125,7 +112,16 @@ export function DocumentsWorkflow({
     }));
 
     setRows((current) => [...newRows, ...current]);
+    setPendingUploadName("");
+    setSelectedFiles([]);
   }
+
+  const selectedFileLabel =
+    selectedFiles.length === 0
+      ? "Keine Datei ausgewählt"
+      : selectedFiles.length === 1
+        ? selectedFiles[0].name
+        : `${selectedFiles.length} Dateien ausgewählt`;
 
   function handleStatusChange(id: string) {
     setRows((current) =>
@@ -145,37 +141,24 @@ export function DocumentsWorkflow({
     setRows((current) => current.filter((row) => row.id !== id));
   }
 
+  function handleRenameSave(id: string) {
+    const nextName = fileRenameDrafts[id]?.trim();
+    if (!nextName) return;
+    setRows((current) =>
+      current.map((row) => (row.id === id ? { ...row, fileName: nextName } : row)),
+    );
+    setFileRenameDrafts((current) => {
+      const { [id]: _, ...rest } = current;
+      return rest;
+    });
+  }
+
   return (
     <div className="space-y-4">
-      <section className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-700">
-          Workflow-Status
-        </h2>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {workflowSteps.map((step, index) => {
-            const done = stepState[index];
-
-            return (
-              <span
-                key={step}
-                className={[
-                  "rounded-full border px-3 py-1.5 text-xs",
-                  done
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                    : "border-zinc-200 bg-zinc-50 text-zinc-600",
-                ].join(" ")}
-              >
-                {index + 1}. {step}
-              </span>
-            );
-          })}
-        </div>
-      </section>
-
       <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-zinc-900">Upload</h3>
         <p className="mt-1 text-sm text-zinc-600">Akzeptierte Formate: PDF, XLSX, CSV</p>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <div className="mt-4 grid gap-3 lg:grid-cols-4">
           <label className="text-sm text-zinc-700">
             Depot auswählen
             <select
@@ -191,16 +174,35 @@ export function DocumentsWorkflow({
             </select>
           </label>
 
-          <label className="text-sm text-zinc-700">
-            Datei hochladen
+          <label className="text-sm text-zinc-700 lg:col-span-2">
+            Dokumente
             <input
               type="file"
               multiple
               accept=".pdf,.xlsx,.csv"
               onChange={(event) => handleFileSelection(event.target.files)}
-              className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-zinc-900 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-zinc-50"
+              className="mt-1 block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm file:mr-2 file:rounded file:border-0 file:bg-zinc-900 file:px-2 file:py-1 file:text-xs file:text-white"
             />
+            <p className="mt-1 text-xs text-zinc-500">{selectedFileLabel}</p>
           </label>
+
+          <div className="text-sm text-zinc-700">
+            Dateiname (optional)
+            <input
+              type="text"
+              value={pendingUploadName}
+              onChange={(event) => setPendingUploadName(event.target.value)}
+              className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+              placeholder="z. B. Jahresstatement_UBS_2026.pdf"
+            />
+            <button
+              type="button"
+              onClick={handleUploadSubmit}
+              className="mt-3 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 hover:bg-zinc-700"
+            >
+              Dokumente übernehmen
+            </button>
+          </div>
         </div>
       </section>
 
@@ -233,7 +235,7 @@ export function DocumentsWorkflow({
                     </span>
                   </td>
                   <td className="px-3 py-3">
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
@@ -246,6 +248,24 @@ export function DocumentsWorkflow({
                         className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
                       >
                         Status ändern
+                      </button>
+                      <input
+                        type="text"
+                        value={fileRenameDrafts[row.id] ?? row.fileName}
+                        onChange={(event) =>
+                          setFileRenameDrafts((current) => ({
+                            ...current,
+                            [row.id]: event.target.value,
+                          }))
+                        }
+                        className="w-52 rounded-md border border-zinc-300 px-2 py-1 text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleRenameSave(row.id)}
+                        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
+                      >
+                        Umbenennen
                       </button>
                       <button
                         type="button"

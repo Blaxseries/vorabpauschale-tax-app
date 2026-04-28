@@ -8,6 +8,7 @@ import type { Client as DatabaseClient } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
 
 type ClientStatus = "Aktiv" | "Rückfrage" | "Archiviert";
+type Salutation = "Herr" | "Frau";
 
 type ClientRecord = {
   id: string;
@@ -19,11 +20,24 @@ type ClientRecord = {
   updated_at: string | null;
 };
 
+type ClientMetadata = {
+  address: string;
+  salutation: Salutation;
+  isCompany: boolean;
+  email: string;
+  phone: string;
+};
+
 type ClientFormState = {
   name: string;
   client_number: string;
   tax_number: string;
   country: string;
+  address: string;
+  salutation: Salutation;
+  is_company: boolean;
+  email: string;
+  phone: string;
 };
 
 type ClientsTableRow = Pick<
@@ -36,7 +50,30 @@ const emptyForm: ClientFormState = {
   client_number: "",
   tax_number: "",
   country: "DE",
+  address: "",
+  salutation: "Herr",
+  is_company: true,
+  email: "",
+  phone: "",
 };
+
+const clientMetadataStorageKey = "client-metadata-v1";
+
+function readClientMetadata(): Record<string, ClientMetadata> {
+  if (typeof window === "undefined") return {};
+  const raw = window.localStorage.getItem(clientMetadataStorageKey);
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as Record<string, ClientMetadata>;
+  } catch {
+    return {};
+  }
+}
+
+function writeClientMetadata(metadata: Record<string, ClientMetadata>) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(clientMetadataStorageKey, JSON.stringify(metadata));
+}
 
 export default function ClientsPage() {
   const [query, setQuery] = useState("");
@@ -48,21 +85,15 @@ export default function ClientsPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   function toErrorMessage(prefix: string, message: string | null): string {
-    if (!message) {
-      return prefix;
-    }
-    return `${prefix} (${message})`;
+    return message ? `${prefix} (${message})` : prefix;
   }
 
   async function fetchClients(options?: {
     keepLoadingState?: boolean;
     onSuccess?: (rows: ClientRecord[]) => void;
   }) {
-    if (!options?.keepLoadingState) {
-      setIsLoading(true);
-    }
+    if (!options?.keepLoadingState) setIsLoading(true);
     setErrorMessage(null);
-
     try {
       const { data, error } = await supabase
         .from("clients")
@@ -70,9 +101,7 @@ export default function ClientsPage() {
         .returns<ClientsTableRow[]>();
 
       if (error) {
-        setErrorMessage(
-          toErrorMessage("Mandanten konnten nicht geladen werden.", error.message),
-        );
+        setErrorMessage(toErrorMessage("Mandanten konnten nicht geladen werden.", error.message));
         setIsLoading(false);
         return;
       }
@@ -87,11 +116,8 @@ export default function ClientsPage() {
         updated_at: row.updated_at ?? row.created_at,
       }));
 
-      if (options?.onSuccess) {
-        options.onSuccess(mappedClients);
-      } else {
-        setClientRows(mappedClients);
-      }
+      if (options?.onSuccess) options.onSuccess(mappedClients);
+      else setClientRows(mappedClients);
       setIsLoading(false);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : null;
@@ -103,14 +129,10 @@ export default function ClientsPage() {
   useEffect(() => {
     let active = true;
     void fetchClients({
-      onSuccess: (mappedClients) => {
-        if (!active) {
-          return;
-        }
-        setClientRows(mappedClients);
+      onSuccess: (rows) => {
+        if (active) setClientRows(rows);
       },
     });
-
     return () => {
       active = false;
     };
@@ -118,10 +140,7 @@ export default function ClientsPage() {
 
   const filteredClients = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) {
-      return clientRows;
-    }
-
+    if (!normalizedQuery) return clientRows;
     return clientRows.filter((client) =>
       [client.name, client.client_number, client.tax_number, client.country]
         .join(" ")
@@ -131,13 +150,9 @@ export default function ClientsPage() {
   }, [clientRows, query]);
 
   function formatUpdatedAt(value: string | null): string {
-    if (!value) {
-      return "-";
-    }
+    if (!value) return "-";
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return "-";
-    }
+    if (Number.isNaN(date.getTime())) return "-";
     return date.toLocaleDateString("de-DE");
   }
 
@@ -147,27 +162,42 @@ export default function ClientsPage() {
     const clientNumber = form.client_number.trim();
     const taxNumber = form.tax_number.trim();
     const country = form.country.trim().toUpperCase();
+    const address = form.address.trim();
+    const email = form.email.trim();
+    const phone = form.phone.trim();
 
-    if (!name || !clientNumber || !taxNumber || !country) {
-      return;
-    }
+    if (!name || !clientNumber || !taxNumber || !country) return;
 
     setIsSubmitting(true);
     setErrorMessage(null);
 
     try {
-      const { error } = await supabase.from("clients").insert({
-        name,
-        client_number: clientNumber,
-        tax_number: taxNumber,
-        country,
-      });
+      const { data: createdClient, error } = await supabase
+        .from("clients")
+        .insert({
+          name,
+          client_number: clientNumber,
+          tax_number: taxNumber,
+          country,
+        })
+        .select("id")
+        .single<{ id: string }>();
 
       if (error) {
         setErrorMessage(toErrorMessage("Mandant konnte nicht angelegt werden.", error.message));
         setIsSubmitting(false);
         return;
       }
+
+      const metadata = readClientMetadata();
+      metadata[createdClient.id] = {
+        address: address || "nicht gepflegt",
+        salutation: form.salutation,
+        isCompany: form.is_company,
+        email: email || "nicht gepflegt",
+        phone: phone || "nicht gepflegt",
+      };
+      writeClientMetadata(metadata);
 
       await fetchClients({ keepLoadingState: true });
       setIsSubmitting(false);
@@ -182,7 +212,7 @@ export default function ClientsPage() {
 
   return (
     <div className="space-y-4">
-      <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
+      <section className="rounded-xl border border-zinc-300 bg-white p-6 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-2xl font-semibold text-zinc-900">Mandanten</h2>
@@ -215,9 +245,9 @@ export default function ClientsPage() {
         ) : null}
       </section>
 
-      <section className="overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm">
+      <section className="overflow-x-auto rounded-xl border border-zinc-300 bg-white shadow-sm">
         <table className="min-w-full divide-y divide-zinc-200 text-sm">
-          <thead className="bg-zinc-50 text-left text-zinc-600">
+          <thead className="bg-zinc-100 text-left text-zinc-700">
             <tr>
               <th className="px-4 py-3 font-medium">Name</th>
               <th className="px-4 py-3 font-medium">Mandantennummer</th>
@@ -269,11 +299,11 @@ export default function ClientsPage() {
 
       {showCreateModal ? (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-zinc-950/30 p-4">
-          <section className="w-full max-w-xl rounded-xl border border-zinc-200 bg-white p-6 shadow-lg">
+          <section className="w-full max-w-3xl rounded-xl border border-zinc-200 bg-white p-6 shadow-lg">
             <h3 className="text-lg font-semibold text-zinc-900">Mandant anlegen</h3>
             <form onSubmit={handleCreateClient} className="mt-4 grid gap-3 md:grid-cols-2">
               <label className="text-sm text-zinc-700 md:col-span-2">
-                Name
+                Name/Firmenname
                 <input
                   type="text"
                   value={form.name}
@@ -290,10 +320,7 @@ export default function ClientsPage() {
                   type="text"
                   value={form.client_number}
                   onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      client_number: event.target.value,
-                    }))
+                    setForm((current) => ({ ...current, client_number: event.target.value }))
                   }
                   className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
                   required
@@ -322,6 +349,74 @@ export default function ClientsPage() {
                   }
                   className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2 uppercase"
                   required
+                />
+              </label>
+              <label className="text-sm text-zinc-700">
+                Mandantentyp
+                <select
+                  value={form.is_company ? "firma" : "privat"}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      is_company: event.target.value === "firma",
+                    }))
+                  }
+                  className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
+                >
+                  <option value="firma">Firma</option>
+                  <option value="privat">Privatperson</option>
+                </select>
+              </label>
+              {!form.is_company ? (
+                <label className="text-sm text-zinc-700">
+                  Geschlecht/Anrede
+                  <select
+                    value={form.salutation}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        salutation: event.target.value as Salutation,
+                      }))
+                    }
+                    className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
+                  >
+                    <option value="Herr">Herr</option>
+                    <option value="Frau">Frau</option>
+                  </select>
+                </label>
+              ) : null}
+              <label className="text-sm text-zinc-700 md:col-span-2">
+                Adresse
+                <input
+                  type="text"
+                  value={form.address}
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, address: event.target.value }))
+                  }
+                  className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
+                  placeholder="Straße, Hausnummer, PLZ Ort"
+                />
+              </label>
+              <label className="text-sm text-zinc-700">
+                E-Mail
+                <input
+                  type="email"
+                  value={form.email}
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, email: event.target.value }))
+                  }
+                  className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
+                />
+              </label>
+              <label className="text-sm text-zinc-700">
+                Telefon
+                <input
+                  type="text"
+                  value={form.phone}
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, phone: event.target.value }))
+                  }
+                  className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2"
                 />
               </label>
               <div className="flex items-end justify-end gap-2 md:col-span-2">

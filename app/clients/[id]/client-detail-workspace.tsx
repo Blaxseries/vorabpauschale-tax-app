@@ -13,6 +13,14 @@ type ClientDetailWorkspaceProps = {
 
 type ClientRow = Pick<DatabaseClient, "id" | "name" | "tax_number" | "country">;
 type TaxYearRow = Pick<TaxYear, "id" | "client_id" | "year" | "status">;
+type Salutation = "Herr" | "Frau";
+type ClientMetadata = {
+  address: string;
+  salutation: Salutation;
+  isCompany: boolean;
+  email: string;
+  phone: string;
+};
 
 type TaxYearForm = {
   year: string;
@@ -23,6 +31,7 @@ const initialTaxYearForm: TaxYearForm = {
   year: String(new Date().getFullYear()),
   status: "open",
 };
+const clientMetadataStorageKey = "client-metadata-v1";
 
 function formatTaxYearStatus(status: TaxYear["status"]): string {
   if (status === "completed") {
@@ -42,6 +51,13 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [form, setForm] = useState<TaxYearForm>(initialTaxYearForm);
+  const [metadata, setMetadata] = useState<ClientMetadata>({
+    address: "nicht gepflegt",
+    salutation: "Herr",
+    isCompany: true,
+    email: "nicht gepflegt",
+    phone: "nicht gepflegt",
+  });
 
   const latestYear = useMemo(() => {
     return [...taxYears].sort((a, b) => b.year - a.year)[0] ?? null;
@@ -81,6 +97,24 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
 
   useEffect(() => {
     void fetchClientAndTaxYears();
+  }, [clientId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const raw = window.localStorage.getItem(clientMetadataStorageKey);
+    if (!raw) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Record<string, ClientMetadata>;
+      if (parsed[clientId]) {
+        setMetadata(parsed[clientId]);
+      }
+    } catch {
+      // keep default metadata
+    }
   }, [clientId]);
 
   async function handleCreateTaxYear(event: FormEvent<HTMLFormElement>) {
@@ -151,14 +185,19 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
           <p className="mt-2 text-sm text-zinc-700">{client.name}</p>
           <p className="text-sm text-zinc-600">Steuernummer: {client.tax_number}</p>
           <p className="text-sm text-zinc-600">Land: {client.country}</p>
+          <p className="text-sm text-zinc-600">Mandantentyp: {metadata.isCompany ? "Firma" : "Privatperson"}</p>
+          {!metadata.isCompany ? (
+            <p className="text-sm text-zinc-600">Anrede: {metadata.salutation}</p>
+          ) : null}
         </article>
 
         <article className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
           <h3 className="text-lg font-semibold text-zinc-900">Stammdaten</h3>
           <ul className="mt-2 space-y-1 text-sm text-zinc-600">
             <li>Mandanten-ID: {client.id}</li>
-            <li>Kanzleizustand: Aktiv</li>
-            <li>Risikoklasse: Standard</li>
+            <li>Adresse: {metadata.address}</li>
+            <li>E-Mail: {metadata.email}</li>
+            <li>Telefon: {metadata.phone}</li>
           </ul>
         </article>
       </section>
@@ -175,24 +214,40 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
               Steuerjahr anlegen
             </button>
           </div>
-          <ul className="mt-3 space-y-2 text-sm text-zinc-700">
-            {taxYears.map((taxYear) => (
-              <li key={taxYear.id} className="flex items-center justify-between">
-                <span>
-                  {taxYear.year} · {formatTaxYearStatus(taxYear.status)}
-                </span>
-                <Link
-                  href={`/clients/${client.id}/years/${taxYear.year}`}
-                  className="text-zinc-800 underline-offset-2 hover:underline"
-                >
-                  öffnen
-                </Link>
-              </li>
-            ))}
-            {taxYears.length === 0 ? (
-              <li className="text-zinc-500">Noch keine Steuerjahre vorhanden.</li>
-            ) : null}
-          </ul>
+          <div className="mt-3 overflow-x-auto rounded-lg border border-zinc-200">
+            <table className="min-w-full divide-y divide-zinc-200 text-sm">
+              <thead className="bg-zinc-50 text-left text-zinc-600">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Steuerjahr</th>
+                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">Aktion</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-200 bg-white text-zinc-700">
+                {taxYears.map((taxYear) => (
+                  <tr key={taxYear.id}>
+                    <td className="px-3 py-2">{taxYear.year}</td>
+                    <td className="px-3 py-2">{formatTaxYearStatus(taxYear.status)}</td>
+                    <td className="px-3 py-2">
+                      <Link
+                        href={`/clients/${client.id}/years/${taxYear.year}`}
+                        className="rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
+                      >
+                        öffnen
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+                {taxYears.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="px-3 py-4 text-center text-zinc-500">
+                      Noch keine Steuerjahre vorhanden.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
         </article>
 
         <article className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">

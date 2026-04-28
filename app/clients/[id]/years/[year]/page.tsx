@@ -18,9 +18,9 @@ export default async function ClientYearOverviewPage({
   const numericYear = Number(year);
   const { data: client, error: clientError } = await supabase
     .from("clients")
-    .select("id, name")
+    .select("id, name, tax_number, country")
     .eq("id", id)
-    .maybeSingle<Pick<Client, "id" | "name">>();
+    .maybeSingle<Pick<Client, "id" | "name" | "tax_number" | "country">>();
   const { data: taxYear, error: taxYearError } = await supabase
     .from("tax_years")
     .select("id, client_id, year, status")
@@ -72,6 +72,28 @@ export default async function ClientYearOverviewPage({
               ? "In Bearbeitung"
               : "Offen"}
         </p>
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <article className="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+            <h3 className="text-sm font-semibold text-zinc-900">Mandantenakte</h3>
+            <p className="mt-2 text-sm text-zinc-700">{client.name}</p>
+            <p className="text-sm text-zinc-600">Steuernummer: {client.tax_number}</p>
+            <p className="text-sm text-zinc-600">Land: {client.country}</p>
+            <Link
+              href={`/clients/${id}`}
+              className="mt-3 inline-block rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100"
+            >
+              Zur Mandantenakte
+            </Link>
+          </article>
+          <article className="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+            <h3 className="text-sm font-semibold text-zinc-900">Stammdaten im Steuerjahr</h3>
+            <ul className="mt-2 space-y-1 text-sm text-zinc-600">
+              <li>Steuerjahr: {year}</li>
+              <li>Aktenstatus: {taxYear.status === "completed" ? "Abgeschlossen" : taxYear.status === "in_progress" ? "In Bearbeitung" : "Offen"}</li>
+              <li>Mandant-ID: {client.id}</li>
+            </ul>
+          </article>
+        </div>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <Link
             href={`/clients/${id}/years/${year}/documents`}

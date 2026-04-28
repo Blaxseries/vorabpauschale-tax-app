@@ -14,6 +14,11 @@ export interface Client {
   client_number: string;
   tax_number: string;
   country: string;
+  address?: string | null;
+  is_company?: boolean | null;
+  salutation?: "Herr" | "Frau" | "Divers" | null;
+  email?: string | null;
+  phone?: string | null;
   status: "active" | "needs_review" | "archived";
   created_at: string;
   updated_at: string;

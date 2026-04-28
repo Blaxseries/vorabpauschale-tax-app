@@ -291,6 +291,7 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
   const [blocks, setBlocks] = useState<PortfolioReviewBlock[]>(initialBlocks);
   const [expandedPositionIds, setExpandedPositionIds] = useState<string[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [collapsedBlockIds, setCollapsedBlockIds] = useState<string[]>([]);
 
   const summary = useMemo(() => {
     const allPositions = blocks.flatMap((block) => block.positions);
@@ -342,6 +343,14 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
     );
   }
 
+  function toggleBlock(blockId: string) {
+    setCollapsedBlockIds((current) =>
+      current.includes(blockId)
+        ? current.filter((id) => id !== blockId)
+        : [...current, blockId],
+    );
+  }
+
   return (
     <div className="space-y-4">
       <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
@@ -369,12 +378,44 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
 
       {blocks.map((block) => {
         const openItems = block.positions.filter((position) => position.hint.trim().length > 0).length;
+        const isCollapsed = collapsedBlockIds.includes(block.id);
         return (
-          <section key={block.id} className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+          <section
+            key={block.id}
+            className="rounded-xl border border-zinc-300 bg-white p-4 shadow-sm"
+          >
             <div className="border-b border-zinc-200 pb-3">
-              <p className="text-sm font-semibold text-zinc-900">
-                {block.bank} · {block.label} · Steuerjahr {year}
-              </p>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-semibold text-zinc-900">
+                  {block.bank} · {block.label} · Steuerjahr {year}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => toggleBlock(block.id)}
+                  className="inline-flex items-center gap-1 rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100"
+                >
+                  <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                    {isCollapsed ? (
+                      <path
+                        d="M5 12l5-5 5 5"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    ) : (
+                      <path
+                        d="M5 8l5 5 5-5"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    )}
+                  </svg>
+                  {isCollapsed ? "Tabelle ausklappen" : "Tabelle einklappen"}
+                </button>
+              </div>
               <div className="mt-2 grid gap-1 text-xs text-zinc-600 md:grid-cols-2 lg:grid-cols-6">
                 <p>Anfangsbestand: {block.openingBasis}</p>
                 <p>Endbestand: {block.closingBasis}</p>
@@ -392,7 +433,8 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
               </div>
             </div>
 
-            <div className="mt-3 overflow-x-auto">
+            {!isCollapsed ? (
+              <div className="mt-3 overflow-x-auto">
               <table className="min-w-[1800px] divide-y divide-zinc-200 text-sm">
                 <thead className="bg-zinc-50 text-left text-zinc-600">
                   <tr>
@@ -477,11 +519,63 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
                             <div>{formatAmount(position.valueEndEur)}</div>
                             <div className="text-xs text-zinc-500">{sourceLabel[position.sourceSummary.eur]}</div>
                           </td>
-                          <td className={`px-3 py-3 ${position.hint.includes("fehlt") ? "text-red-700" : position.hint ? "text-amber-700" : "text-zinc-500"}`}>{position.hint || "nicht geprüft"}</td>
+                          <td className="px-3 py-3">
+                            {position.hint ? (
+                              <div className="group relative inline-flex items-center">
+                                <span
+                                  className={`inline-flex h-5 w-5 items-center justify-center rounded-full ${
+                                    position.hint.includes("fehlt")
+                                      ? "bg-red-100 text-red-700"
+                                      : "bg-amber-100 text-amber-700"
+                                  }`}
+                                  aria-label="Prüfhinweis vorhanden"
+                                >
+                                  <svg
+                                    viewBox="0 0 20 20"
+                                    className="h-3.5 w-3.5"
+                                    fill="none"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      d="M10 3l7 13H3l7-13z"
+                                      stroke="currentColor"
+                                      strokeWidth="1.6"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    />
+                                    <path
+                                      d="M10 7v4"
+                                      stroke="currentColor"
+                                      strokeWidth="1.6"
+                                      strokeLinecap="round"
+                                    />
+                                    <circle cx="10" cy="13.5" r="0.8" fill="currentColor" />
+                                  </svg>
+                                </span>
+                                <div className="pointer-events-none absolute left-7 top-1/2 z-20 hidden w-72 -translate-y-1/2 rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs text-zinc-700 shadow-md group-hover:block">
+                                  {position.hint}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-zinc-500">—</span>
+                            )}
+                          </td>
                           <td className="px-3 py-3">
                             <div className="relative flex flex-nowrap items-center gap-1">
                               <button type="button" onClick={() => toggleExpanded(position.id)} className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100">
-                                Details
+                                <span className="inline-flex items-center gap-1">
+                                  <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                                    <path
+                                      d="M3 10s2.8-4 7-4 7 4 7 4-2.8 4-7 4-7-4-7-4z"
+                                      stroke="currentColor"
+                                      strokeWidth="1.6"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    />
+                                    <circle cx="10" cy="10" r="1.8" stroke="currentColor" strokeWidth="1.6" />
+                                  </svg>
+                                  Details
+                                </span>
                               </button>
                               <button type="button" onClick={() => setOpenMenuId((current) => (current === position.id ? null : position.id))} className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100">
                                 ⋯
@@ -545,7 +639,8 @@ export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
                   })}
                 </tbody>
               </table>
-            </div>
+              </div>
+            ) : null}
           </section>
         );
       })}

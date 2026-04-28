@@ -14,18 +14,36 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="flex min-h-screen bg-zinc-50 text-zinc-900">
-      <div className="relative shrink-0 overflow-visible">
+      <div className="flex shrink-0 bg-zinc-100">
         <Sidebar isCollapsed={isSidebarCollapsed} />
-        <button
-          type="button"
-          onClick={() => setIsSidebarCollapsed((current) => !current)}
-          aria-label={isSidebarCollapsed ? "Menü einblenden" : "Menü einklappen"}
-          className="absolute right-0 top-6 z-20 translate-x-1/2 rounded-full border border-zinc-300 bg-white p-1 text-zinc-600 shadow-sm hover:bg-zinc-100"
-        >
-          <span className="block h-5 w-5 text-center text-sm leading-5">
-            {isSidebarCollapsed ? "›" : "‹"}
-          </span>
-        </button>
+        <div className="flex w-5 items-start justify-center border-r border-zinc-200 bg-zinc-100 pt-6">
+          <button
+            type="button"
+            onClick={() => setIsSidebarCollapsed((current) => !current)}
+            aria-label={isSidebarCollapsed ? "Menü einblenden" : "Menü einklappen"}
+            className="rounded-md border border-zinc-300 bg-white p-1 text-zinc-600 shadow-sm hover:bg-zinc-100"
+          >
+            <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
+              {isSidebarCollapsed ? (
+                <path
+                  d="M7 4l6 6-6 6"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              ) : (
+                <path
+                  d="M13 4l-6 6 6 6"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              )}
+            </svg>
+          </button>
+        </div>
       </div>
       <div className="flex flex-1 flex-col">
         <Header />
