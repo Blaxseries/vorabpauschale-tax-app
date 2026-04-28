@@ -234,8 +234,8 @@ export function DocumentsWorkflow({
     setRows((current) => current.filter((row) => row.id !== id));
   }
 
-  function handleRenameSave(id: string) {
-    const nextName = fileRenameDrafts[id]?.trim();
+  function handleRenameSave(id: string, nameDraft?: string) {
+    const nextName = (nameDraft ?? fileRenameDrafts[id])?.trim();
     if (!nextName) return;
     setRows((current) =>
       current.map((row) => (row.id === id ? { ...row, fileName: nextName } : row)),
@@ -341,44 +341,75 @@ export function DocumentsWorkflow({
                     </span>
                   </td>
                   <td className="px-3 py-3">
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
+                        aria-label="Zur Prüftabelle"
+                        title="Zur Prüftabelle"
+                        className="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
                       >
-                        Zur Prüftabelle
+                        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
+                          <rect x="3" y="4" width="14" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+                          <path d="M3 8h14M8 8v8" stroke="currentColor" strokeWidth="1.5" />
+                        </svg>
                       </button>
                       <button
                         type="button"
                         onClick={() => handleStatusChange(row.id)}
-                        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
+                        aria-label="Status ändern"
+                        title="Status ändern"
+                        className="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
                       >
-                        Status ändern
+                        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
+                          <path
+                            d="M16 10a6 6 0 11-1.76-4.24M16 3v3h-3"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
                       </button>
-                      <input
-                        type="text"
-                        value={fileRenameDrafts[row.id] ?? row.fileName}
-                        onChange={(event) =>
-                          setFileRenameDrafts((current) => ({
-                            ...current,
-                            [row.id]: event.target.value,
-                          }))
-                        }
-                        className="w-52 rounded-md border border-zinc-300 px-2 py-1 text-xs"
-                      />
                       <button
                         type="button"
-                        onClick={() => handleRenameSave(row.id)}
-                        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
+                        onClick={() => {
+                          const nextName = window.prompt("Neuen Dateinamen eingeben", row.fileName);
+                          if (!nextName) return;
+                          setFileRenameDrafts((current) => ({ ...current, [row.id]: nextName }));
+                          handleRenameSave(row.id, nextName);
+                        }}
+                        aria-label="Umbenennen"
+                        title="Umbenennen"
+                        className="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
                       >
-                        Umbenennen
+                        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
+                          <path
+                            d="M4 13.5V16h2.5L15 7.5 12.5 5 4 13.5z"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                          <path d="M11.8 5.7l2.5 2.5" stroke="currentColor" strokeWidth="1.5" />
+                        </svg>
                       </button>
                       <button
                         type="button"
                         onClick={() => handleDelete(row.id)}
-                        className="rounded-md border border-zinc-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+                        aria-label="Löschen"
+                        title="Löschen"
+                        className="rounded-md border border-zinc-300 p-1.5 text-red-700 hover:bg-red-50"
                       >
-                        Löschen
+                        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
+                          <path d="M4.5 6h11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                          <path
+                            d="M7.5 6V4.8c0-.44.36-.8.8-.8h3.4c.44 0 .8.36.8.8V6m-7 0l.6 9.2c.03.44.4.8.85.8h6.1c.45 0 .82-.36.85-.8L15.5 6"
+                            stroke="currentColor"
+                            strokeWidth="1.4"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
                       </button>
                     </div>
                   </td>
