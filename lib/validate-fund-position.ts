@@ -1,9 +1,11 @@
 import { getTeilfreistellungssatz, type FondsPosition } from "@/lib/calculate-vorabpauschale";
 
 export type FundPositionValidationInput = {
+  portfolio_id?: string | null;
   isin?: string | null;
   fund_name?: string | null;
   tax_fund_type?: string | null;
+  partial_exemption_rate?: number | null;
   units_end?: number | null;
   price_start?: number | null;
   price_end?: number | null;
@@ -60,12 +62,20 @@ function hasText(value: string | null | undefined): boolean {
   return Boolean((value ?? "").trim());
 }
 
+function isPartialRateSet(value: number | null | undefined): boolean {
+  return typeof value === "number" && !Number.isNaN(value);
+}
+
 /**
  * Zentrale Prüfung, ob eine Fondsposition in die Vorabpauschale-Berechnung einfließen darf.
  */
 export function validateFundPosition(position: FundPositionValidationInput): FundPositionValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+
+  if (!hasText(position.portfolio_id)) {
+    errors.push("Zuordnung zum Depot fehlt.");
+  }
 
   if (!hasText(position.isin)) {
     errors.push("ISIN fehlt.");
@@ -74,23 +84,29 @@ export function validateFundPosition(position: FundPositionValidationInput): Fun
     errors.push("Fondsname fehlt.");
   }
 
-  const taxType = parseTaxFundType(position.tax_fund_type);
   if (!hasText(position.tax_fund_type)) {
     errors.push("Steuerliche Fondsart fehlt.");
-  } else if (!taxType) {
+  } else if (!parseTaxFundType(position.tax_fund_type)) {
     errors.push("Steuerliche Fondsart ist ungültig.");
   }
 
+  if (isPartialRateSet(position.partial_exemption_rate)) {
+    const p = position.partial_exemption_rate as number;
+    if (p < 0 || p > 1) {
+      errors.push("Teilfreistellung muss zwischen 0 und 1 liegen.");
+    }
+  }
+
   if (position.units_end === null || position.units_end === undefined || Number.isNaN(position.units_end)) {
-    errors.push("Bestand per 31.12. fehlt.");
+    errors.push("Bestand 31.12. fehlt.");
   }
 
   if (position.price_start === null || position.price_start === undefined || Number.isNaN(position.price_start)) {
-    errors.push("NAV per 01.01. fehlt.");
+    errors.push("NAV 01.01. fehlt.");
   }
 
   if (position.price_end === null || position.price_end === undefined || Number.isNaN(position.price_end)) {
-    errors.push("NAV per 31.12. fehlt.");
+    errors.push("NAV 31.12. fehlt.");
   }
 
   if (!hasText(position.currency)) {
@@ -100,13 +116,13 @@ export function validateFundPosition(position: FundPositionValidationInput): Fun
     if (cur !== "EUR") {
       const fx = resolveFxEndRate(position);
       if (fx === null) {
-        errors.push("Für Fremdwährung fehlt ein gültiger EZB-Kurs (Jahresende, EZB-Kurs oder EZB-Satz > 0).");
+        errors.push("FX-Kurs fehlt.");
       }
     }
   }
 
   if (!isReviewedGeprueft(position.review_status)) {
-    errors.push('Prüfstatus muss „geprüft“ sein.');
+    errors.push("Position ist nicht geprüft.");
   }
 
   if (!hasText(position.product_type)) {
@@ -118,29 +134,28 @@ export function validateFundPosition(position: FundPositionValidationInput): Fun
   return { calculationReady, errors, warnings };
 }
 
-/** Kurz-Badges für die Prüftabelle (aus Validierungsfehlern abgeleitet). */
+const BADGE_ORDER = ["Fondsart fehlt", "FX fehlt", "NAV fehlt", "Bestand fehlt", "Nicht geprüft"] as const;
+
+/** Kompakte Badges für die Spalte „Berechnungsfähig“ (feste Menge, fester Reihung). */
 export function fundPositionIssueBadges(position: FundPositionValidationInput): string[] {
   const { errors } = validateFundPosition(position);
-  const badges: string[] = [];
+  const hit = new Set<string>();
   for (const e of errors) {
-    if (e.includes("ISIN")) badges.push("ISIN fehlt");
-    else if (e.includes("Fondsname")) badges.push("Name fehlt");
-    else if (e.includes("Steuerliche Fondsart")) badges.push("Fondsart fehlt");
-    else if (e.includes("Bestand per 31.12.")) badges.push("Bestand fehlt");
-    else if (e.includes("NAV per 01.01.")) badges.push("NAV 01.01. fehlt");
-    else if (e.includes("NAV per 31.12.")) badges.push("NAV 31.12. fehlt");
-    else if (e.includes("Währung fehlt")) badges.push("Währung fehlt");
-    else if (e.includes("EZB-Kurs")) badges.push("FX fehlt");
-    else if (e.includes("Prüfstatus")) badges.push("Nicht geprüft");
-    else badges.push(e.replace(/\.$/, ""));
+    if (e === "Position ist nicht geprüft.") hit.add("Nicht geprüft");
+    else if (e === "FX-Kurs fehlt.") hit.add("FX fehlt");
+    else if (e === "NAV 01.01. fehlt." || e === "NAV 31.12. fehlt.") hit.add("NAV fehlt");
+    else if (e === "Bestand 31.12. fehlt.") hit.add("Bestand fehlt");
+    else if (e === "Steuerliche Fondsart fehlt." || e === "Steuerliche Fondsart ist ungültig.") hit.add("Fondsart fehlt");
   }
-  return [...new Set(badges)];
+  return BADGE_ORDER.filter((b) => hit.has(b));
 }
 
 export function rowToValidationInput(row: {
+  portfolio_id?: string | null;
   isin?: string | null;
   fund_name?: string | null;
   tax_fund_type?: string | null;
+  partial_exemption_rate?: number | null;
   units_end?: number | null;
   price_start?: number | null;
   price_end?: number | null;
@@ -153,9 +168,11 @@ export function rowToValidationInput(row: {
   product_type?: string | null;
 }): FundPositionValidationInput {
   return {
+    portfolio_id: row.portfolio_id,
     isin: row.isin,
     fund_name: row.fund_name,
     tax_fund_type: row.tax_fund_type,
+    partial_exemption_rate: row.partial_exemption_rate,
     units_end: row.units_end,
     price_start: row.price_start,
     price_end: row.price_end,
@@ -169,15 +186,20 @@ export function rowToValidationInput(row: {
   };
 }
 
-/** Teilfreistellung für Anzeige/Berechnung: expliziter Satz oder Ableitung aus steuerlicher Fondsart. */
+/**
+ * Teilfreistellungssatz für Anzeige: Override (0–1) oder Ableitung aus tax_fund_type.
+ * Ohne gültige steuerliche Fondsart und ohne gültigen Override: null (kein stiller Fallback auf „sonstige“).
+ */
 export function resolvePartialExemptionRate(
   taxFundType: string | null | undefined,
   partialExemptionRate: number | null | undefined,
-): number {
-  if (typeof partialExemptionRate === "number" && Number.isFinite(partialExemptionRate)) {
-    return Math.max(0, Math.min(1, partialExemptionRate));
+): number | null {
+  if (isPartialRateSet(partialExemptionRate)) {
+    const p = partialExemptionRate as number;
+    if (!Number.isFinite(p) || p < 0 || p > 1) return null;
+    return Math.max(0, Math.min(1, p));
   }
   const parsed = parseTaxFundType(taxFundType);
-  if (parsed) return getTeilfreistellungssatz(parsed);
-  return getTeilfreistellungssatz("sonstige");
+  if (!parsed) return null;
+  return getTeilfreistellungssatz(parsed);
 }

@@ -7,7 +7,7 @@ export const TAX_FUND_TYPE_SELECT = [
   { key: "misch" as const, label: "Mischfonds" },
   { key: "immobilien" as const, label: "Immobilienfonds (Inland)" },
   { key: "immobilien_ausland" as const, label: "Immobilienfonds (Ausland)" },
-  { key: "sonstige" as const, label: "Sonstige / keine Teilfreistellung" },
+  { key: "sonstige" as const, label: "Sonstiger Investmentfonds" },
 ] as const;
 
 export type TaxFundTypeKey = (typeof TAX_FUND_TYPE_SELECT)[number]["key"];
@@ -28,6 +28,7 @@ export function teilfreistellungAnteilTextForTaxType(
   partialRate: number | null | undefined,
 ): string {
   const v = resolvePartialExemptionRate(taxFundType, partialRate);
+  if (v === null) return "—";
   return `${(v * 100).toLocaleString("de-DE", { maximumFractionDigits: 2 })} %`;
 }
 
@@ -71,6 +72,45 @@ export function resolveEzbEnd(row: {
   const c = row.ezb_rate;
   if (typeof c === "number" && Number.isFinite(c) && c > 0) return c;
   return 1;
+}
+
+/** Wie resolveEzbEnd, aber ohne Fallback 1 (für UI, wenn kein Kurs gesetzt ist). */
+export function resolveEzbEndStrict(row: {
+  ezb_kurs_jahresende?: number | null;
+  ezb_kurs?: number | null;
+  ezb_rate?: number | null;
+}): number | null {
+  const a = row.ezb_kurs_jahresende;
+  if (typeof a === "number" && Number.isFinite(a) && a > 0) return a;
+  const b = row.ezb_kurs;
+  if (typeof b === "number" && Number.isFinite(b) && b > 0) return b;
+  const c = row.ezb_rate;
+  if (typeof c === "number" && Number.isFinite(c) && c > 0) return c;
+  return null;
+}
+
+/** Wie resolveEzbStart, aber ohne Fallback 1. */
+export function resolveEzbStartStrict(row: {
+  ezb_kurs_jahresanfang?: number | null;
+  ezb_kurs?: number | null;
+  ezb_rate?: number | null;
+}): number | null {
+  const a = row.ezb_kurs_jahresanfang;
+  if (typeof a === "number" && Number.isFinite(a) && a > 0) return a;
+  const b = row.ezb_kurs;
+  if (typeof b === "number" && Number.isFinite(b) && b > 0) return b;
+  const c = row.ezb_rate;
+  if (typeof c === "number" && Number.isFinite(c) && c > 0) return c;
+  return null;
+}
+
+/**
+ * EZB-Kurs im Sinne von toEurFromLocal: EUR pro 1 Einheit Fremdwährung.
+ * Anzeige „1 EUR = x Fremdwährung“ → x = 1 / ezbEurPerForeignUnit.
+ */
+export function foreignUnitsPerOneEur(ezbEurPerForeignUnit: number): number | null {
+  if (!Number.isFinite(ezbEurPerForeignUnit) || ezbEurPerForeignUnit <= 0) return null;
+  return 1 / ezbEurPerForeignUnit;
 }
 
 export function toEurFromLocal(

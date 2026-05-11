@@ -6,6 +6,7 @@ import {
   type FondsPosition,
   type MandantErgebnis,
   calculateMandant,
+  getTeilfreistellungssatz,
 } from "@/lib/calculate-vorabpauschale";
 import { TAX_FUND_TYPE_SELECT, parseTaxFundTypeKey, resolveEzbEnd } from "@/lib/fund-position-metadata";
 import { supabase } from "@/lib/supabase";
@@ -95,7 +96,9 @@ function buildFundRow(raw: Record<string, unknown>, portfolioId: string, yearNum
 
   const taxKey = parseTaxFundTypeKey(asString(raw.tax_fund_type));
   const fondsart = taxKey ?? "sonstige";
-  const teilfreistellung = resolvePartialExemptionRate(asString(raw.tax_fund_type), asNumber(raw.partial_exemption_rate));
+  const teilfreistellung =
+    resolvePartialExemptionRate(asString(raw.tax_fund_type), asNumber(raw.partial_exemption_rate)) ??
+    getTeilfreistellungssatz(fondsart);
 
   const waehrungIstEur = currency.toUpperCase() === "EUR";
   const ezb = waehrungIstEur
@@ -227,9 +230,11 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
           const isin = asString(raw.isin) || "—";
 
           const input = rowToValidationInput({
+            portfolio_id: asString(raw.portfolio_id),
             isin: asString(raw.isin),
             fund_name: asString(raw.fund_name),
             tax_fund_type: asString(raw.tax_fund_type),
+            partial_exemption_rate: asNumber(raw.partial_exemption_rate),
             units_end: asNumber(raw.units_end),
             price_start: asNumber(raw.price_start),
             price_end: asNumber(raw.price_end),

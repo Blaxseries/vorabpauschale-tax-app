@@ -351,7 +351,7 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
       isin: form.isin.trim() || null,
       fund_name: form.fund_name.trim() || null,
       product_type: form.product_type.trim() || null,
-      tax_fund_type: form.tax_fund_type.trim() || null,
+      tax_fund_type: form.tax_fund_type.trim() || "sonstige",
       partial_exemption_rate: null,
       currency: cur,
       units_start: toNullableNumber(form.units_start),
@@ -563,18 +563,6 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
                             <td className="max-w-[200px] px-2 py-2">
                               <p className="font-medium leading-snug text-zinc-900">{position.fund_name?.trim() || "—"}</p>
                               <p className="mt-0.5 text-[11px] text-zinc-500">{position.isin?.trim() || "—"}</p>
-                              {badges.length > 0 ? (
-                                <div className="mt-1 flex flex-wrap gap-1">
-                                  {badges.map((b) => (
-                                    <span
-                                      key={b}
-                                      className="inline-block rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900"
-                                    >
-                                      {b}
-                                    </span>
-                                  ))}
-                                </div>
-                              ) : null}
                             </td>
                             <td className="px-2 py-2">{position.product_type?.trim() || "—"}</td>
                             <td className="px-2 py-2">{taxFundTypeLabel(position.tax_fund_type)}</td>
@@ -597,11 +585,25 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
                                 <option value="geprüft">geprüft</option>
                               </select>
                             </td>
-                            <td className="px-2 py-2">
+                            <td className="max-w-[140px] px-2 py-2">
                               {val.calculationReady ? (
                                 <span className="text-emerald-800">Ja</span>
                               ) : (
-                                <span className="text-zinc-600">Nein</span>
+                                <div className="space-y-1">
+                                  <span className="text-zinc-600">Nein</span>
+                                  {badges.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1">
+                                      {badges.map((b) => (
+                                        <span
+                                          key={b}
+                                          className="inline-block rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900"
+                                        >
+                                          {b}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
                               )}
                             </td>
                             <td className="px-2 py-2">
