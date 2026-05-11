@@ -1,10 +1,9 @@
 /**
- * Reiner Berechnungskern für Vorabpauschale gemäß docs/02_tax_calculation_spec.md.
+ * Berechnungskern Vorabpauschale (Euro-only).
  *
- * Wichtige Randbedingungen:
- * - Keine UI-Logik
- * - Keine Datenbank-/Supabase-Aufrufe
- * - Vollständige Zwischenwerte für spätere Protokollansicht
+ * Vorgelagerte Schicht (z. B. calculation-summary) liefert ausschließlich EUR-Werte.
+ * kurs_jahresanfang / kurs_jahresende / ausschuettungen sind damit immer EUR-bezogen.
+ * waehrung und ezb_kurs sind optional/deprecated und werden im Kern nicht ausgewertet.
  */
 
 export interface FondsPosition {
@@ -12,18 +11,30 @@ export interface FondsPosition {
   isin: string;
   fondsname: string;
   fondsart: "aktien" | "misch" | "immobilien" | "immobilien_ausland" | "sonstige";
+  /** Optional 0–1; sonst Ableitung aus fondsart. product_type/fund_type werden nicht verwendet. */
   teilfreistellungssatz?: number;
   anzahl_anteile: number;
+  /** Nav bzw. Rücknahmepreis je Anteil am 01.01. in EUR (bereits umgerechnet). */
   kurs_jahresanfang: number;
+  /** Nav bzw. Rücknahmepreis je Anteil am 31.12. in EUR. */
   kurs_jahresende: number;
+  /** Ausschüttungen im Jahr in EUR. */
   ausschuettungen: number;
-  waehrung: string;
-  ezb_kurs: number;
+  /** @deprecated Nur für Kompatibilität; Kern ignoriert. */
+  waehrung?: string;
+  /** @deprecated Nur für Kompatibilität; Kern ignoriert. */
+  ezb_kurs?: number;
   kauf_datum?: string | Date | null;
   verkauf_datum?: string | Date | null;
   ist_verkaufsjahr?: boolean;
   steuerjahr: number;
 }
+
+export type TaxOptions = {
+  freistellungsauftrag?: number;
+  kirchensteuer?: "none" | "8" | "9";
+  solidaritaetszuschlag?: boolean;
+};
 
 export interface FondsErgebnis {
   depot_id: string;
@@ -31,7 +42,9 @@ export interface FondsErgebnis {
   fondsname: string;
   fondsart: FondsPosition["fondsart"];
   steuerjahr: number;
+  /** @deprecated Kern rechnet nur EUR; nicht mehr gesetzt. */
   waehrung: string;
+  /** @deprecated */
   waehrung_ist_eur: boolean;
   verwendeter_basiszins: number;
   teilfreistellungssatz: number;
@@ -40,14 +53,28 @@ export interface FondsErgebnis {
   ist_verkaufsjahr: boolean;
   jahresanfangswert: number;
   basisertrag: number;
+  /** (kurs_jahresende − kurs_jahresanfang) × anzahl_anteile, ohne Ausschüttungen. */
   wertsteigerung: number;
+  /** § 18: Wertänderung inkl. Ausschüttungen (vor Begrenzung). */
+  wertsteigerung_inkl_ausschuettungen: number;
+  /** min(Basisertrag, max(Wertsteigerung inkl. Ausschüttungen, 0)). */
+  begrenzter_basisertrag: number;
+  /** @deprecated Entspricht begrenzter_basisertrag. */
   vorabpauschale_brutto: number;
+  /** max(begrenzter_basisertrag − ausschuettungen_eur, 0), vor unterjähriger Kürzung. */
+  vorabpauschale_vor_kuerzung: number;
+  /** @deprecated Entspricht vorabpauschale_vor_kuerzung. */
   vorabpauschale_netto: number;
   vorabpauschale_gekuerzt: number;
+  /** Nach Teilfreistellung; End-KeSt/Soli/KiSt nur auf Gesamtebene (TaxOptions). */
   steuerpflichtig: number;
+  /** @deprecated Immer 0 — Steuer nur in calculateMandant. */
   kest: number;
+  /** @deprecated Immer 0. */
   soli: number;
+  /** @deprecated Immer 0. */
   kirchensteuer: number;
+  /** @deprecated Immer 0. */
   gesamtsteuer: number;
   vorabpauschale: number;
   ist_nullfall: boolean;
@@ -65,6 +92,7 @@ export interface DepotErgebnis {
   fonds_ergebnisse: FondsErgebnis[];
   summe_vorabpauschale_depot: number;
   summe_steuerpflichtig_depot: number;
+  /** Summe Positions-KeSt (deprecated, hier 0). */
   summe_kest_depot: number;
   summe_soli_depot: number;
   summe_kirchensteuer_depot: number;
@@ -121,24 +149,27 @@ export function getTeilfreistellungssatz(fondsart: string): number {
   }
 }
 
+function resolveTeilfreistellungssatz(position: FondsPosition): number {
+  if (typeof position.teilfreistellungssatz === "number" && Number.isFinite(position.teilfreistellungssatz)) {
+    const t = position.teilfreistellungssatz;
+    if (t < 0 || t > 1) {
+      throw new Error(`teilfreistellungssatz muss zwischen 0 und 1 liegen (${position.isin}).`);
+    }
+    return Math.max(0, Math.min(1, t));
+  }
+  return getTeilfreistellungssatz(position.fondsart);
+}
+
 export function calculateFondsPosition(position: FondsPosition): FondsErgebnis {
   const protokoll: FondsErgebnis["protokoll"] = [];
+  const waehrung = position.waehrung ?? "EUR";
 
   const basiszins = getBasiszins(position.steuerjahr);
-  const teilfreistellungssatz =
-    typeof position.teilfreistellungssatz === "number"
-      ? position.teilfreistellungssatz
-      : getTeilfreistellungssatz(position.fondsart);
+  const teilfreistellungssatz = resolveTeilfreistellungssatz(position);
 
-  const waehrungIstEur = position.waehrung.toUpperCase() === "EUR";
-  const fx = waehrungIstEur ? 1 : position.ezb_kurs;
-  if (!Number.isFinite(fx) || fx <= 0) {
-    throw new Error(`Ungültiger EZB-Kurs für ${position.isin}.`);
-  }
-
-  const kursJahresanfangEur = round6(position.kurs_jahresanfang / fx);
-  const kursJahresendeEur = round6(position.kurs_jahresende / fx);
-  const ausschuettungenEur = round6(position.ausschuettungen / fx);
+  const navStartEur = round6(position.kurs_jahresanfang);
+  const navEndEur = round6(position.kurs_jahresende);
+  const ausschuettungenEur = round6(position.ausschuettungen);
 
   const istVerkaufsjahr = Boolean(position.ist_verkaufsjahr) || isSaleInTaxYear(position);
   if (istVerkaufsjahr) {
@@ -146,7 +177,7 @@ export function calculateFondsPosition(position: FondsPosition): FondsErgebnis {
       position,
       basiszins,
       teilfreistellungssatz,
-      waehrungIstEur,
+      waehrung,
       protokoll,
       grund: "Verkaufsjahr: keine Vorabpauschale.",
     });
@@ -157,16 +188,16 @@ export function calculateFondsPosition(position: FondsPosition): FondsErgebnis {
       position,
       basiszins,
       teilfreistellungssatz,
-      waehrungIstEur,
+      waehrung,
       protokoll,
       grund: "Basiszins ist 0.",
     });
   }
 
-  const jahresanfangswert = round6(position.anzahl_anteile * kursJahresanfangEur);
+  const jahresanfangswert = round6(position.anzahl_anteile * navStartEur);
   protokoll.push({
     schritt: "Jahresanfangswert",
-    formel: "anzahl_anteile × kurs_jahresanfang_eur",
+    formel: "anzahl_anteile × nav_start_eur",
     wert: jahresanfangswert,
   });
 
@@ -177,97 +208,68 @@ export function calculateFondsPosition(position: FondsPosition): FondsErgebnis {
     wert: basisertrag,
   });
 
-  if (ausschuettungenEur >= basisertrag) {
-    return buildZeroResult({
-      position,
-      basiszins,
-      teilfreistellungssatz,
-      waehrungIstEur,
-      protokoll,
-      grund: "Ausschüttungen >= Basisertrag.",
-      jahresanfangswert,
-      basisertrag,
-      wertsteigerung: 0,
-    });
-  }
-
-  const wertsteigerung = round6((kursJahresendeEur - kursJahresanfangEur) * position.anzahl_anteile);
+  const wertsteigerung = round6((navEndEur - navStartEur) * position.anzahl_anteile);
   protokoll.push({
-    schritt: "Wertsteigerung",
-    formel: "(kurs_jahresende_eur - kurs_jahresanfang_eur) × anzahl_anteile",
+    schritt: "Wertänderung (Preis)",
+    formel: "(nav_end_eur − nav_start_eur) × anzahl_anteile",
     wert: wertsteigerung,
   });
 
-  if (wertsteigerung <= 0) {
+  const wertsteigerungInklAusschuettungen = round6(wertsteigerung + ausschuettungenEur);
+  protokoll.push({
+    schritt: "Wertsteigerung inkl. Ausschüttungen",
+    formel: "wertsteigerung + ausschuettungen_eur",
+    wert: wertsteigerungInklAusschuettungen,
+  });
+
+  const begrenzterBasisertrag = round6(Math.min(basisertrag, Math.max(wertsteigerungInklAusschuettungen, 0)));
+  protokoll.push({
+    schritt: "Begrenzter Basisertrag",
+    formel: "MIN(basisertrag, MAX(wertsteigerung_inkl_ausschuettungen, 0))",
+    wert: begrenzterBasisertrag,
+  });
+
+  const vorabpauschaleVorKuerzung = round6(Math.max(begrenzterBasisertrag - ausschuettungenEur, 0));
+  protokoll.push({
+    schritt: "Vorabpauschale vor Kürzung",
+    formel: "MAX(begrenzter_basisertrag − ausschuettungen_eur, 0)",
+    wert: vorabpauschaleVorKuerzung,
+  });
+
+  if (vorabpauschaleVorKuerzung <= 0) {
     return buildZeroResult({
       position,
       basiszins,
       teilfreistellungssatz,
-      waehrungIstEur,
+      waehrung,
       protokoll,
-      grund: "Wertsteigerung <= 0.",
+      grund: "Vorabpauschale vor Kürzung = 0.",
       jahresanfangswert,
       basisertrag,
       wertsteigerung,
-    });
-  }
-
-  const vorabpauschaleBrutto = round6(Math.min(basisertrag, wertsteigerung));
-  protokoll.push({
-    schritt: "Vorabpauschale brutto",
-    formel: "MIN(basisertrag, wertsteigerung)",
-    wert: vorabpauschaleBrutto,
-  });
-
-  const vorabpauschaleNetto = round6(vorabpauschaleBrutto - ausschuettungenEur);
-  protokoll.push({
-    schritt: "Vorabpauschale netto",
-    formel: "vorabpauschale_brutto - ausschuettungen_eur",
-    wert: vorabpauschaleNetto,
-  });
-
-  if (vorabpauschaleNetto <= 0) {
-    return buildZeroResult({
-      position,
-      basiszins,
-      teilfreistellungssatz,
-      waehrungIstEur,
-      protokoll,
-      grund: "Vorabpauschale netto <= 0.",
-      jahresanfangswert,
-      basisertrag,
-      wertsteigerung,
-      vorabpauschaleBrutto,
-      vorabpauschaleNetto,
+      wertsteigerung_inkl_ausschuettungen: wertsteigerungInklAusschuettungen,
+      begrenzter_basisertrag: begrenzterBasisertrag,
+      vorabpauschale_vor_kuerzung: vorabpauschaleVorKuerzung,
     });
   }
 
   const kuerzungsmonate = getKuerzungsmonate(position.kauf_datum);
   const kuerzungsfaktor = round6((12 - kuerzungsmonate) / 12);
-  const vorabpauschaleGekuerzt = round6(vorabpauschaleNetto * kuerzungsfaktor);
+  const vorabpauschaleGekuerzt = round6(vorabpauschaleVorKuerzung * kuerzungsfaktor);
   protokoll.push({
     schritt: "Unterjährige Kürzung",
-    formel: "vorabpauschale_netto × ((12 - kuerzungsmonate) / 12)",
+    formel: "vorabpauschale_vor_kuerzung × ((12 − kuerzungsmonate) / 12)",
     wert: vorabpauschaleGekuerzt,
     hinweis: `Kürzungsmonate: ${kuerzungsmonate}`,
   });
 
   const steuerpflichtig = round6(vorabpauschaleGekuerzt * (1 - teilfreistellungssatz));
   protokoll.push({
-    schritt: "Steuerpflichtiger Betrag",
-    formel: "vorabpauschale_gekuerzt × (1 - teilfreistellungssatz)",
+    schritt: "Steuerpflicht nach Teilfreistellung (Position)",
+    formel: "vorabpauschale_gekuerzt × (1 − teilfreistellungssatz)",
     wert: steuerpflichtig,
+    hinweis: "Endgültige Kapitalertragsteuer auf Mandantenebene (Freistellungsauftrag, KiSt, Soli).",
   });
-
-  const kest = round2(steuerpflichtig * 0.25);
-  const soli = round2(kest * 0.055);
-  const kirchensteuer = 0;
-  const gesamtsteuer = round2(kest + soli + kirchensteuer);
-
-  protokoll.push({ schritt: "KeSt", formel: "steuerpflichtig × 0,25", wert: kest });
-  protokoll.push({ schritt: "Soli", formel: "kest × 0,055", wert: soli });
-  protokoll.push({ schritt: "KiSt", formel: "optional", wert: kirchensteuer, hinweis: "Auf Positionsebene nicht angesetzt." });
-  protokoll.push({ schritt: "Gesamtsteuer", formel: "kest + soli + kirchensteuer", wert: gesamtsteuer });
 
   return {
     depot_id: position.depot_id,
@@ -275,8 +277,8 @@ export function calculateFondsPosition(position: FondsPosition): FondsErgebnis {
     fondsname: position.fondsname,
     fondsart: position.fondsart,
     steuerjahr: position.steuerjahr,
-    waehrung: position.waehrung,
-    waehrung_ist_eur: waehrungIstEur,
+    waehrung,
+    waehrung_ist_eur: waehrung.toUpperCase() === "EUR",
     verwendeter_basiszins: basiszins,
     teilfreistellungssatz,
     kuerzungsfaktor,
@@ -285,14 +287,17 @@ export function calculateFondsPosition(position: FondsPosition): FondsErgebnis {
     jahresanfangswert,
     basisertrag,
     wertsteigerung,
-    vorabpauschale_brutto: vorabpauschaleBrutto,
-    vorabpauschale_netto: vorabpauschaleNetto,
+    wertsteigerung_inkl_ausschuettungen: wertsteigerungInklAusschuettungen,
+    begrenzter_basisertrag: begrenzterBasisertrag,
+    vorabpauschale_brutto: begrenzterBasisertrag,
+    vorabpauschale_vor_kuerzung: vorabpauschaleVorKuerzung,
+    vorabpauschale_netto: vorabpauschaleVorKuerzung,
     vorabpauschale_gekuerzt: vorabpauschaleGekuerzt,
     steuerpflichtig,
-    kest,
-    soli,
-    kirchensteuer,
-    gesamtsteuer,
+    kest: 0,
+    soli: 0,
+    kirchensteuer: 0,
+    gesamtsteuer: 0,
     vorabpauschale: round2(vorabpauschaleGekuerzt),
     ist_nullfall: false,
     nullfall_grund: null,
@@ -306,27 +311,25 @@ export function calculateDepot(positionen: FondsPosition[]): DepotErgebnis {
 
   const summeVorabpauschaleDepot = round2(sumBy(fondsErgebnisse, (item) => item.vorabpauschale));
   const summeSteuerpflichtigDepot = round6(sumBy(fondsErgebnisse, (item) => item.steuerpflichtig));
-  const summeKestDepot = round2(sumBy(fondsErgebnisse, (item) => item.kest));
-  const summeSoliDepot = round2(sumBy(fondsErgebnisse, (item) => item.soli));
-  const summeKirchensteuerDepot = round2(sumBy(fondsErgebnisse, (item) => item.kirchensteuer));
-  const summeSteuerDepot = round2(summeKestDepot + summeSoliDepot + summeKirchensteuerDepot);
 
   return {
     depot_id: depotId,
     fonds_ergebnisse: fondsErgebnisse,
     summe_vorabpauschale_depot: summeVorabpauschaleDepot,
     summe_steuerpflichtig_depot: summeSteuerpflichtigDepot,
-    summe_kest_depot: summeKestDepot,
-    summe_soli_depot: summeSoliDepot,
-    summe_kirchensteuer_depot: summeKirchensteuerDepot,
-    summe_steuer_depot: summeSteuerDepot,
+    summe_kest_depot: 0,
+    summe_soli_depot: 0,
+    summe_kirchensteuer_depot: 0,
+    summe_steuer_depot: 0,
   };
 }
 
+/**
+ * Mandantenaggregation inkl. Freistellungsauftrag und Steuer (KeSt, Soli, KiSt) auf Gesamtebene.
+ */
 export function calculateMandant(
   depots: { depot_id: string; positionen: FondsPosition[] }[],
-  freistellungsauftrag: number,
-  kirchensteuersatz?: number,
+  taxOptions: TaxOptions = {},
 ): MandantErgebnis {
   const depotErgebnisse = depots.map((depot) =>
     calculateDepot(
@@ -343,22 +346,39 @@ export function calculateMandant(
   const summeSteuerpflichtigVorFreistellung = round6(
     sumBy(depotErgebnisse, (depot) => depot.summe_steuerpflichtig_depot),
   );
+
+  const freistellungsauftrag = Math.max(taxOptions.freistellungsauftrag ?? 0, 0);
   const steuerpflichtigNachFreistellung = round6(
-    Math.max(summeSteuerpflichtigVorFreistellung - Math.max(freistellungsauftrag, 0), 0),
+    Math.max(summeSteuerpflichtigVorFreistellung - freistellungsauftrag, 0),
   );
 
-  const kestGesamt = round2(steuerpflichtigNachFreistellung * 0.25);
-  const soliGesamt = round2(kestGesamt * 0.055);
-  const kirchensteuerGesamt = round2(
-    kirchensteuersatz ? kestGesamt * Math.max(kirchensteuersatz, 0) : 0,
-  );
+  const ki = taxOptions.kirchensteuer ?? "none";
+  let kestGesamt: number;
+  let kirchensteuerGesamt: number;
+
+  if (ki === "8") {
+    const k = 0.08;
+    kestGesamt = round2(steuerpflichtigNachFreistellung / (4 + k));
+    kirchensteuerGesamt = round2(kestGesamt * k);
+  } else if (ki === "9") {
+    const k = 0.09;
+    kestGesamt = round2(steuerpflichtigNachFreistellung / (4 + k));
+    kirchensteuerGesamt = round2(kestGesamt * k);
+  } else {
+    kestGesamt = round2(steuerpflichtigNachFreistellung * 0.25);
+    kirchensteuerGesamt = 0;
+  }
+
+  const soliAktiv = taxOptions.solidaritaetszuschlag !== false;
+  const soliGesamt = soliAktiv ? round2(kestGesamt * 0.055) : 0;
   const summeSteuerGesamt = round2(kestGesamt + soliGesamt + kirchensteuerGesamt);
 
   const protokoll = [
     `Summe Vorabpauschale gesamt: ${summeVorabpauschaleGesamt.toFixed(2)} EUR`,
     `Steuerpflichtig vor Freistellungsauftrag: ${summeSteuerpflichtigVorFreistellung.toFixed(6)} EUR`,
-    `Freistellungsauftrag: ${Math.max(freistellungsauftrag, 0).toFixed(2)} EUR`,
+    `Freistellungsauftrag: ${freistellungsauftrag.toFixed(2)} EUR`,
     `Steuerpflichtig nach Freistellungsauftrag: ${steuerpflichtigNachFreistellung.toFixed(6)} EUR`,
+    `Kirchensteuer-Modus: ${ki}`,
     `KeSt gesamt: ${kestGesamt.toFixed(2)} EUR`,
     `Soli gesamt: ${soliGesamt.toFixed(2)} EUR`,
     `KiSt gesamt: ${kirchensteuerGesamt.toFixed(2)} EUR`,
@@ -369,7 +389,7 @@ export function calculateMandant(
     depot_ergebnisse: depotErgebnisse,
     summe_vorabpauschale_gesamt: summeVorabpauschaleGesamt,
     summe_steuerpflichtig_vor_freistellung: summeSteuerpflichtigVorFreistellung,
-    freistellungsauftrag: round2(Math.max(freistellungsauftrag, 0)),
+    freistellungsauftrag: round2(freistellungsauftrag),
     steuerpflichtig_nach_freistellung: steuerpflichtigNachFreistellung,
     kest_gesamt: kestGesamt,
     soli_gesamt: soliGesamt,
@@ -383,27 +403,29 @@ function buildZeroResult(params: {
   position: FondsPosition;
   basiszins: number;
   teilfreistellungssatz: number;
-  waehrungIstEur: boolean;
+  waehrung: string;
   protokoll: FondsErgebnis["protokoll"];
   grund: string;
   jahresanfangswert?: number;
   basisertrag?: number;
   wertsteigerung?: number;
-  vorabpauschaleBrutto?: number;
-  vorabpauschaleNetto?: number;
+  wertsteigerung_inkl_ausschuettungen?: number;
+  begrenzter_basisertrag?: number;
+  vorabpauschale_vor_kuerzung?: number;
 }): FondsErgebnis {
   const {
     position,
     basiszins,
     teilfreistellungssatz,
-    waehrungIstEur,
+    waehrung,
     protokoll,
     grund,
     jahresanfangswert = 0,
     basisertrag = 0,
     wertsteigerung = 0,
-    vorabpauschaleBrutto = 0,
-    vorabpauschaleNetto = 0,
+    wertsteigerung_inkl_ausschuettungen = 0,
+    begrenzter_basisertrag = 0,
+    vorabpauschale_vor_kuerzung = 0,
   } = params;
 
   protokoll.push({
@@ -419,8 +441,8 @@ function buildZeroResult(params: {
     fondsname: position.fondsname,
     fondsart: position.fondsart,
     steuerjahr: position.steuerjahr,
-    waehrung: position.waehrung,
-    waehrung_ist_eur: waehrungIstEur,
+    waehrung,
+    waehrung_ist_eur: waehrung.toUpperCase() === "EUR",
     verwendeter_basiszins: basiszins,
     teilfreistellungssatz,
     kuerzungsfaktor: 1,
@@ -429,8 +451,11 @@ function buildZeroResult(params: {
     jahresanfangswert,
     basisertrag,
     wertsteigerung,
-    vorabpauschale_brutto: vorabpauschaleBrutto,
-    vorabpauschale_netto: vorabpauschaleNetto,
+    wertsteigerung_inkl_ausschuettungen,
+    begrenzter_basisertrag,
+    vorabpauschale_brutto: begrenzter_basisertrag,
+    vorabpauschale_vor_kuerzung,
+    vorabpauschale_netto: vorabpauschale_vor_kuerzung,
     vorabpauschale_gekuerzt: 0,
     steuerpflichtig: 0,
     kest: 0,

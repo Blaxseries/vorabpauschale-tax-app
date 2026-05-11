@@ -8,7 +8,11 @@ import {
   calculateMandant,
   getTeilfreistellungssatz,
 } from "@/lib/calculate-vorabpauschale";
-import { TAX_FUND_TYPE_SELECT, parseTaxFundTypeKey, resolveEzbEnd } from "@/lib/fund-position-metadata";
+import {
+  TAX_FUND_TYPE_SELECT,
+  parseTaxFundTypeKey,
+  resolveEzbEndStrict,
+} from "@/lib/fund-position-metadata";
 import { supabase } from "@/lib/supabase";
 import {
   resolvePartialExemptionRate,
@@ -72,8 +76,6 @@ type DisplayRow = {
   teilfreistellung: number | null;
   vorabpauschale: number | null;
   steuerpflichtig: number | null;
-  kest: number | null;
-  soli: number | null;
 };
 
 type ExcludedRow = {
@@ -84,13 +86,18 @@ type ExcludedRow = {
   errors: string[];
 };
 
+/**
+ * EZB-Felder: Semantik „1 EUR = x Fremdwährungseinheiten“ → EUR-Betrag = Fremdwährungsbetrag / x.
+ * Der Berechnungskern erhält nur EUR (kurs_jahresanfang / kurs_jahresende / ausschuettungen).
+ */
 function buildFundRow(raw: Record<string, unknown>, portfolioId: string, yearNum: number): FondsPosition | null {
   const fundName = asString(raw.fund_name) || "Unbenannter Fonds";
   const isin = asString(raw.isin);
-  const currency = asString(raw.currency) || "EUR";
+  const currency = (asString(raw.currency) || "EUR").toUpperCase();
   const startPrice = asNumber(raw.price_start);
   const endPrice = asNumber(raw.price_end);
   const unitsEnd = asNumber(raw.units_end);
+  const distributionsFcy = asNumber(raw.distributions) ?? 0;
 
   if (!isin || startPrice === null || endPrice === null || unitsEnd === null) return null;
 
@@ -100,20 +107,44 @@ function buildFundRow(raw: Record<string, unknown>, portfolioId: string, yearNum
     resolvePartialExemptionRate(asString(raw.tax_fund_type), asNumber(raw.partial_exemption_rate)) ??
     getTeilfreistellungssatz(fondsart);
 
-  const waehrungIstEur = currency.toUpperCase() === "EUR";
-  const ezb = waehrungIstEur
-    ? 1
-    : resolveEzbEnd({
-        ezb_kurs_jahresende: asNumber(raw.ezb_kurs_jahresende),
-        ezb_kurs: asNumber(raw.ezb_kurs),
-        ezb_rate: asNumber(raw.ezb_rate),
-      });
+  const ezbRow = {
+    ezb_kurs_jahresende: asNumber(raw.ezb_kurs_jahresende),
+    ezb_kurs: asNumber(raw.ezb_kurs),
+    ezb_rate: asNumber(raw.ezb_rate),
+  };
 
-  if (!waehrungIstEur && (ezb === null || !Number.isFinite(ezb) || ezb <= 0)) {
-    return null;
+  let kursJahresanfangEur: number;
+  let kursJahresendeEur: number;
+  let ausschuettungenEur: number;
+
+  if (currency === "EUR") {
+    kursJahresanfangEur = startPrice;
+    kursJahresendeEur = endPrice;
+    ausschuettungenEur = distributionsFcy;
+  } else {
+    const ezbEnd = resolveEzbEndStrict(ezbRow);
+    if (ezbEnd === null) return null;
+
+    const ezbStartExplicit = asNumber(raw.ezb_kurs_jahresanfang);
+    const ezbStart =
+      ezbStartExplicit !== null && Number.isFinite(ezbStartExplicit) && ezbStartExplicit > 0
+        ? ezbStartExplicit
+        : // MVP-Fallback: NAV 01.01. mit Jahresendkurs umgerechnet — später Stichtagskurs 01.01.
+          ezbEnd;
+
+    kursJahresanfangEur = startPrice / ezbStart;
+    kursJahresendeEur = endPrice / ezbEnd;
+    // MVP: Ausschüttungen mit Jahresendkurs (gleiche Kette wie NAV 31.12.) — später nach Zahlungsdatum.
+    ausschuettungenEur = distributionsFcy / ezbEnd;
   }
 
-  const fx = waehrungIstEur ? 1 : (ezb as number);
+  if (
+    !Number.isFinite(kursJahresanfangEur) ||
+    !Number.isFinite(kursJahresendeEur) ||
+    !Number.isFinite(ausschuettungenEur)
+  ) {
+    return null;
+  }
 
   return {
     depot_id: portfolioId,
@@ -122,11 +153,10 @@ function buildFundRow(raw: Record<string, unknown>, portfolioId: string, yearNum
     fondsart,
     teilfreistellungssatz: teilfreistellung,
     anzahl_anteile: unitsEnd,
-    kurs_jahresanfang: startPrice,
-    kurs_jahresende: endPrice,
-    ausschuettungen: asNumber(raw.distributions) ?? 0,
+    kurs_jahresanfang: kursJahresanfangEur,
+    kurs_jahresende: kursJahresendeEur,
+    ausschuettungen: ausschuettungenEur,
     waehrung: currency,
-    ezb_kurs: fx,
     kauf_datum: asString(raw.purchase_date) || null,
     verkauf_datum: asString(raw.verkauf_datum) || null,
     ist_verkaufsjahr: false,
@@ -295,7 +325,11 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
         return;
       }
 
-      const mandantResult = calculateMandant(depotsForCalculation, 0);
+      const mandantResult = calculateMandant(depotsForCalculation, {
+        freistellungsauftrag: 0,
+        kirchensteuer: "none",
+        solidaritaetszuschlag: true,
+      });
 
       for (const depot of mandantResult.depot_ergebnisse) {
         calculatedDisplayRowsByDepot[depot.depot_id] = depot.fonds_ergebnisse.map((entry) => ({
@@ -306,8 +340,6 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
           teilfreistellung: entry.teilfreistellungssatz,
           vorabpauschale: entry.vorabpauschale,
           steuerpflichtig: entry.steuerpflichtig,
-          kest: entry.kest,
-          soli: entry.soli,
         }));
       }
 
@@ -443,6 +475,10 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
             </div>
             {!isCollapsed && hasEligiblePositions ? (
             <div className="overflow-x-auto">
+              <p className="border-b border-zinc-200 bg-zinc-50 px-4 py-2 text-xs text-zinc-600">
+                KeSt und Soli je Fonds werden nicht ausgewiesen; Freistellungsauftrag und Endbesteuerung gelten auf
+                Gesamtebene (siehe Karten oben bzw. Abschnitt Gesamtsumme).
+              </p>
               <table className="min-w-full divide-y divide-zinc-200 text-sm">
                 <thead className="bg-zinc-50 text-left text-zinc-600">
                   <tr>
@@ -451,9 +487,7 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
                     <th className="w-[14%] px-4 py-2 font-medium">Steuerliche Fondsart</th>
                     <th className="w-[12%] px-4 py-2 text-right font-medium">Vorabpauschale</th>
                     <th className="w-[10%] px-4 py-2 text-right font-medium">Teilfreistellung</th>
-                    <th className="w-[12%] px-4 py-2 text-right font-medium">Steuerpflichtig</th>
-                    <th className="w-[7%] px-4 py-2 text-right font-medium">KeSt</th>
-                    <th className="w-[7%] px-4 py-2 text-right font-medium">Soli</th>
+                    <th className="w-[26%] px-4 py-2 text-right font-medium">Steuerpflichtig (Pos., nach TF)</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200">
@@ -472,13 +506,11 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
                           : `${(row.teilfreistellung * 100).toFixed(0)} %`}
                       </td>
                       <td className="px-4 py-2 text-right">{`${formatEur(row.steuerpflichtig ?? 0)} EUR`}</td>
-                      <td className="px-4 py-2 text-right">{`${formatEur(row.kest ?? 0)} EUR`}</td>
-                      <td className="px-4 py-2 text-right">{`${formatEur(row.soli ?? 0)} EUR`}</td>
                     </tr>
                   ))}
                   {rows.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-4 text-sm text-zinc-500">
+                      <td colSpan={6} className="px-4 py-4 text-sm text-zinc-500">
                         Keine berechnungsfähigen Fondspositionen in diesem Depot.
                       </td>
                     </tr>
@@ -497,12 +529,6 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
                     <td className="px-4 py-2 text-right font-semibold text-zinc-900">
                       {formatEur(depot?.summe_steuerpflichtig_depot ?? 0)} EUR
                     </td>
-                    <td className="px-4 py-2 text-right font-semibold text-zinc-900">
-                      {formatEur(depot?.summe_kest_depot ?? 0)} EUR
-                    </td>
-                    <td className="px-4 py-2 text-right font-semibold text-zinc-900">
-                      {formatEur(depot?.summe_soli_depot ?? 0)} EUR
-                    </td>
                   </tr>
                 </tfoot>
                 ) : null}
@@ -516,12 +542,20 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
       {result && hasEligiblePositions ? (
         <section className="rounded-xl border border-zinc-900 bg-zinc-50 p-5 shadow-sm">
           <h3 className="text-base font-semibold text-zinc-900">Gesamtsumme Steuerjahr {year}</h3>
-          <div className="mt-3 grid gap-2 text-sm text-zinc-800 md:grid-cols-2 lg:grid-cols-5">
+          <div className="mt-3 grid gap-2 text-sm text-zinc-800 sm:grid-cols-2 lg:grid-cols-3">
             <p><span className="font-medium">Vorabpauschale:</span> {formatEur(result.summe_vorabpauschale_gesamt)} EUR</p>
-            <p><span className="font-medium">Steuerpflichtig:</span> {formatEur(result.steuerpflichtig_nach_freistellung)} EUR</p>
+            <p>
+              <span className="font-medium">Steuerpflichtig (nach Freistellungsauftrag):</span>{" "}
+              {formatEur(result.steuerpflichtig_nach_freistellung)} EUR
+            </p>
+            <p className="text-zinc-600">
+              <span className="font-medium">Summe steuerpflichtig (Pos., vor Freistellungsauftrag):</span>{" "}
+              {formatEur(result.summe_steuerpflichtig_vor_freistellung)} EUR
+            </p>
             <p><span className="font-medium">KeSt:</span> {formatEur(result.kest_gesamt)} EUR</p>
             <p><span className="font-medium">Soli:</span> {formatEur(result.soli_gesamt)} EUR</p>
             <p><span className="font-medium">KiSt:</span> {formatEur(result.kirchensteuer_gesamt)} EUR</p>
+            <p><span className="font-medium">Gesamtsteuer:</span> {formatEur(result.summe_steuer_gesamt)} EUR</p>
           </div>
         </section>
       ) : null}
