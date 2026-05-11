@@ -63,7 +63,12 @@ export interface FundPosition {
   statement_upload_id: string | null;
   isin: string;
   fund_name: string;
+  /** Freitext/Legacy; nicht für Teilfreistellung verwenden. */
   fund_type?: string | null;
+  product_type?: string | null;
+  /** Steuerliche Kategorie: aktien | misch | immobilien | immobilien_ausland | sonstige */
+  tax_fund_type?: string | null;
+  partial_exemption_rate?: number | null;
   currency?: string | null;
   purchase_date?: string | null;
   units_start: number;
@@ -81,6 +86,10 @@ export interface FundPosition {
   nav_data_source?: string | null;
   ezb_data_source?: string | null;
   advisor_note?: string | null;
+  reviewed_at?: string | null;
+  reviewed_by?: string | null;
+  calculation_ready?: boolean | null;
+  validation_errors?: unknown;
   review_status: string;
   created_at: string;
   updated_at: string;

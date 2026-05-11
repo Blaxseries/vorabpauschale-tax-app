@@ -29,6 +29,7 @@ export interface FondsErgebnis {
   depot_id: string;
   isin: string;
   fondsname: string;
+  fondsart: FondsPosition["fondsart"];
   steuerjahr: number;
   waehrung: string;
   waehrung_ist_eur: boolean;
@@ -272,6 +273,7 @@ export function calculateFondsPosition(position: FondsPosition): FondsErgebnis {
     depot_id: position.depot_id,
     isin: position.isin,
     fondsname: position.fondsname,
+    fondsart: position.fondsart,
     steuerjahr: position.steuerjahr,
     waehrung: position.waehrung,
     waehrung_ist_eur: waehrungIstEur,
@@ -415,6 +417,7 @@ function buildZeroResult(params: {
     depot_id: position.depot_id,
     isin: position.isin,
     fondsname: position.fondsname,
+    fondsart: position.fondsart,
     steuerjahr: position.steuerjahr,
     waehrung: position.waehrung,
     waehrung_ist_eur: waehrungIstEur,

@@ -4,17 +4,21 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getAnrechenbareMonate, getBasiszins } from "@/lib/calculate-vorabpauschale";
 import {
-  FUND_ART_SELECT,
+  PRODUCT_TYPE_SUGGESTIONS,
+  TAX_FUND_TYPE_SELECT,
   formatDataOrigin,
-  fundArtKeyToDbString,
-  parseFundArtKey,
+  parseTaxFundTypeKey,
   resolveEzbEnd,
   resolveEzbStart,
-  teilfreistellungAnteilTextFromRaw,
-  teilfreistellungDecimalFromRaw,
+  teilfreistellungAnteilTextForTaxType,
   toEurFromLocal,
-  type FundArtKey,
+  type TaxFundTypeKey,
 } from "@/lib/fund-position-metadata";
+import {
+  resolvePartialExemptionRate,
+  rowToValidationInput,
+  validateFundPosition,
+} from "@/lib/validate-fund-position";
 import { supabase } from "@/lib/supabase";
 
 export type FundPositionDossierRow = {
@@ -22,7 +26,10 @@ export type FundPositionDossierRow = {
   portfolio_id: string;
   isin: string | null;
   fund_name: string | null;
-  fund_type: string | null;
+  fund_type?: string | null;
+  product_type?: string | null;
+  tax_fund_type?: string | null;
+  partial_exemption_rate?: number | null;
   currency: string | null;
   units_start: number | null;
   units_end: number | null;
@@ -41,6 +48,8 @@ export type FundPositionDossierRow = {
   ezb_kurs_jahresanfang: number | null;
   ezb_kurs_jahresende: number | null;
   advisor_note: string | null;
+  calculation_ready?: boolean | null;
+  validation_errors?: unknown;
   created_at: string | null;
   updated_at: string | null;
   reviewed_at: string | null;
@@ -128,6 +137,10 @@ function DRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function defaultTaxFundKey(raw: string | null | undefined): TaxFundTypeKey {
+  return parseTaxFundTypeKey(raw) ?? "sonstige";
+}
+
 export function FundPositionDossier({
   position,
   taxYear,
@@ -142,6 +155,7 @@ export function FundPositionDossier({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Parent signalisiert Bearbeitungsmodus
     if (startInEditMode) setIsEditing(true);
   }, [startInEditMode]);
 
@@ -162,11 +176,11 @@ export function FundPositionDossier({
   const navEndEur =
     currency === "EUR" ? navEndLocal : toEurFromLocal(navEndLocal, currency, ezbEnd);
 
-  const fundArtKey = parseFundArtKey(position.fund_type);
-  const tfRaw = teilfreistellungAnteilTextFromRaw(position.fund_type);
-  const tfDec = teilfreistellungDecimalFromRaw(position.fund_type);
+  const taxFundKey = defaultTaxFundKey(position.tax_fund_type);
+  const tfRateNumeric = resolvePartialExemptionRate(position.tax_fund_type, position.partial_exemption_rate);
+  const tfRaw = teilfreistellungAnteilTextForTaxType(position.tax_fund_type, position.partial_exemption_rate);
   const tfJaNein =
-    tfDec > 0 ? `Ja, Satz ${tfRaw}` : `Nein (Satz ${tfRaw})`;
+    tfRateNumeric > 0 ? `Ja, Satz ${tfRaw}` : `Nein (Satz ${tfRaw})`;
 
   const anrechenbar = getAnrechenbareMonate(position.purchase_date);
   const unterjaehrig = Boolean(position.purchase_date);
@@ -175,7 +189,9 @@ export function FundPositionDossier({
   const ezbQuelle = formatDataOrigin(position.ezb_data_source ?? position.data_source);
 
   const [form, setForm] = useState({
-    fundArtKey,
+    productType: position.product_type?.trim() ?? "",
+    taxFundKey,
+    partialExemptionOverride: "",
     purchaseDate: (position.purchase_date ?? "").slice(0, 10),
     priceStart: position.price_start?.toString() ?? "",
     priceEnd: position.price_end?.toString() ?? "",
@@ -188,8 +204,17 @@ export function FundPositionDossier({
   });
 
   useEffect(() => {
+    const key = defaultTaxFundKey(position.tax_fund_type);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Formular bei neuer Serverzeile zurücksetzen
     setForm({
-      fundArtKey,
+      productType: position.product_type?.trim() ?? "",
+      taxFundKey: key,
+      partialExemptionOverride:
+        position.partial_exemption_rate !== null &&
+        position.partial_exemption_rate !== undefined &&
+        Number.isFinite(position.partial_exemption_rate)
+          ? String(position.partial_exemption_rate)
+          : "",
       purchaseDate: (position.purchase_date ?? "").slice(0, 10),
       priceStart: position.price_start?.toString() ?? "",
       priceEnd: position.price_end?.toString() ?? "",
@@ -213,13 +238,35 @@ export function FundPositionDossier({
     const ezbS = toNullableNumber(form.ezbStart);
     const ezbE = toNullableNumber(form.ezbEnd);
     const dist = toNullableNumber(form.distributions) ?? 0;
-
+    const partialOverride = toNullableNumber(form.partialExemptionOverride);
     const primaryEzb = ezbE ?? ezbS ?? 1;
+
+    const mergedForValidate: FundPositionDossierRow = {
+      ...position,
+      product_type: form.productType.trim() || null,
+      tax_fund_type: form.taxFundKey,
+      partial_exemption_rate: partialOverride,
+      purchase_date: form.purchaseDate.trim() || null,
+      price_start: priceStart,
+      price_end: priceEnd,
+      nav_start_local: navSL,
+      nav_end_local: navEL,
+      ezb_kurs_jahresanfang: ezbS,
+      ezb_kurs_jahresende: ezbE,
+      ezb_kurs: primaryEzb,
+      ezb_rate: primaryEzb,
+      distributions: dist,
+      advisor_note: form.advisorNote.trim() || null,
+    };
+
+    const validation = validateFundPosition(rowToValidationInput(mergedForValidate));
 
     const { error } = await supabase
       .from("fund_positions")
       .update({
-        fund_type: fundArtKeyToDbString(form.fundArtKey),
+        product_type: form.productType.trim() || null,
+        tax_fund_type: form.taxFundKey,
+        partial_exemption_rate: partialOverride,
         purchase_date: form.purchaseDate.trim() || null,
         price_start: priceStart,
         price_end: priceEnd,
@@ -231,6 +278,8 @@ export function FundPositionDossier({
         ezb_rate: primaryEzb,
         distributions: dist,
         advisor_note: form.advisorNote.trim() || null,
+        calculation_ready: validation.calculationReady,
+        validation_errors: validation.errors,
       })
       .eq("id", position.id);
 
@@ -298,20 +347,44 @@ export function FundPositionDossier({
           <p className="text-sm font-medium text-zinc-900">Bearbeiten</p>
           <div className="mt-3 grid gap-4 md:grid-cols-2">
             <label className="block text-sm text-zinc-700">
-              Fondsart
+              Produktart (z. B. ETF, Fonds)
+              <input
+                list="product-type-suggestions"
+                value={form.productType}
+                onChange={(e) => setForm((f) => ({ ...f, productType: e.target.value }))}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+                placeholder="ETF, Fonds, …"
+              />
+              <datalist id="product-type-suggestions">
+                {PRODUCT_TYPE_SUGGESTIONS.map((s) => (
+                  <option key={s} value={s} />
+                ))}
+              </datalist>
+            </label>
+            <label className="block text-sm text-zinc-700">
+              Steuerliche Fondsart
               <select
-                value={form.fundArtKey}
+                value={form.taxFundKey}
                 onChange={(e) =>
-                  setForm((f) => ({ ...f, fundArtKey: e.target.value as FundArtKey }))
+                  setForm((f) => ({ ...f, taxFundKey: e.target.value as TaxFundTypeKey }))
                 }
                 className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
               >
-                {FUND_ART_SELECT.map((o) => (
+                {TAX_FUND_TYPE_SELECT.map((o) => (
                   <option key={o.key} value={o.key}>
                     {o.label}
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="block text-sm text-zinc-700 md:col-span-2">
+              Teilfreistellung manuell (optional, 0–1; leer = aus steuerlicher Fondsart)
+              <input
+                value={form.partialExemptionOverride}
+                onChange={(e) => setForm((f) => ({ ...f, partialExemptionOverride: e.target.value }))}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+                placeholder="z. B. 0,3"
+              />
             </label>
             <label className="block text-sm text-zinc-700">
               Kaufdatum (bei unterjährigem Erwerb)
@@ -322,6 +395,7 @@ export function FundPositionDossier({
                 className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
               />
             </label>
+            <div />
             <label className="block text-sm text-zinc-700">
               NAV 01.01. ({currency})
               <input
@@ -395,8 +469,24 @@ export function FundPositionDossier({
         <Section title="Fondsinformationen">
           <DRow label="Fondsname" value={position.fund_name ?? "—"} />
           <DRow label="ISIN" value={position.isin ?? "—"} />
-          <DRow label="Fondsart" value={position.fund_type?.trim() ? position.fund_type : "—"} />
-          <DRow label="Teilfreistellungssatz (automatisch je Fondsart)" value={tfRaw} />
+          <DRow label="Produktart" value={position.product_type?.trim() ? position.product_type : "—"} />
+          <DRow
+            label="Steuerliche Fondsart"
+            value={
+              TAX_FUND_TYPE_SELECT.find((o) => o.key === taxFundKey)?.label ??
+              (position.tax_fund_type?.trim() ? position.tax_fund_type : "—")
+            }
+          />
+          <DRow
+            label="Teilfreistellung (Satz)"
+            value={
+              position.partial_exemption_rate !== null &&
+              position.partial_exemption_rate !== undefined &&
+              Number.isFinite(position.partial_exemption_rate)
+                ? `${formatPercentDisplay(Math.max(0, Math.min(1, position.partial_exemption_rate)))} (manuell)`
+                : `${tfRaw} (aus Fondsart)`
+            }
+          />
           <DRow label="Währung" value={currency} />
         </Section>
 
@@ -445,7 +535,7 @@ export function FundPositionDossier({
             value={`${formatNum(position.distributions, 2, 2)} EUR`}
           />
           <DRow label="Basiszins des Jahres" value={formatPercentDisplay(basiszins)} />
-          <DRow label="Teilfreistellung" value={tfJaNein} />
+          <DRow label="Teilfreistellung (für Berechnung)" value={tfJaNein} />
         </Section>
 
         <Section title="Datenherkunft">
@@ -463,6 +553,16 @@ export function FundPositionDossier({
 
         <Section title="Prüfstatus">
           <DRow label="Status" value={mapReviewStatusLabel(position.review_status)} />
+          <DRow
+            label="Berechnungsfähig"
+            value={
+              position.calculation_ready ? (
+                <span className="text-emerald-800">Ja</span>
+              ) : (
+                <span className="text-zinc-600">Nein</span>
+              )
+            }
+          />
           <DRow
             label="Hinweis / Notiz"
             value={

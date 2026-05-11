@@ -6,9 +6,14 @@ import {
   type FondsPosition,
   type MandantErgebnis,
   calculateMandant,
-  getTeilfreistellungssatz,
 } from "@/lib/calculate-vorabpauschale";
+import { TAX_FUND_TYPE_SELECT, parseTaxFundTypeKey, resolveEzbEnd } from "@/lib/fund-position-metadata";
 import { supabase } from "@/lib/supabase";
+import {
+  resolvePartialExemptionRate,
+  rowToValidationInput,
+  validateFundPosition,
+} from "@/lib/validate-fund-position";
 
 type PortfolioMeta = {
   id: string;
@@ -35,42 +40,109 @@ function asNumber(value: unknown): number | null {
   return null;
 }
 
-function toFundType(value: string): FondsPosition["fondsart"] {
-  const normalized = value.toLowerCase();
-  if (normalized.includes("aktien")) return "aktien";
-  if (normalized.includes("misch")) return "misch";
-  if (normalized.includes("immobilien") && normalized.includes("ausland")) return "immobilien_ausland";
-  if (normalized.includes("immobilien")) return "immobilien";
-  return "sonstige";
+function asBoolean(value: unknown): boolean {
+  return value === true;
+}
+
+function mapReviewStatusGeprueft(status: string | null | undefined): boolean {
+  const n = (status ?? "").trim().toLowerCase();
+  return n === "geprüft" || n === "geprueft" || n === "gepruft" || n === "approved";
 }
 
 function formatEur(value: number): string {
   return value.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function parseStoredErrors(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is string => typeof item === "string");
+}
+
+function taxFundTypeDisplayLabel(fondsart: string): string {
+  const hit = TAX_FUND_TYPE_SELECT.find((o) => o.key === fondsart);
+  return hit?.label ?? fondsart;
+}
+
 type DisplayRow = {
   id: string;
   fundName: string;
   isin: string;
-  fundType: string;
+  taxFundTypeLabel: string;
   teilfreistellung: number | null;
   vorabpauschale: number | null;
   steuerpflichtig: number | null;
   kest: number | null;
   soli: number | null;
-  skipped: boolean;
-  skipReason: string | null;
 };
+
+type ExcludedRow = {
+  id: string;
+  portfolioId: string;
+  fundName: string;
+  isin: string;
+  errors: string[];
+};
+
+function buildFundRow(raw: Record<string, unknown>, portfolioId: string, yearNum: number): FondsPosition | null {
+  const fundName = asString(raw.fund_name) || "Unbenannter Fonds";
+  const isin = asString(raw.isin);
+  const currency = asString(raw.currency) || "EUR";
+  const startPrice = asNumber(raw.price_start);
+  const endPrice = asNumber(raw.price_end);
+  const unitsEnd = asNumber(raw.units_end);
+
+  if (!isin || startPrice === null || endPrice === null || unitsEnd === null) return null;
+
+  const taxKey = parseTaxFundTypeKey(asString(raw.tax_fund_type));
+  const fondsart = taxKey ?? "sonstige";
+  const teilfreistellung = resolvePartialExemptionRate(asString(raw.tax_fund_type), asNumber(raw.partial_exemption_rate));
+
+  const waehrungIstEur = currency.toUpperCase() === "EUR";
+  const ezb = waehrungIstEur
+    ? 1
+    : resolveEzbEnd({
+        ezb_kurs_jahresende: asNumber(raw.ezb_kurs_jahresende),
+        ezb_kurs: asNumber(raw.ezb_kurs),
+        ezb_rate: asNumber(raw.ezb_rate),
+      });
+
+  if (!waehrungIstEur && (ezb === null || !Number.isFinite(ezb) || ezb <= 0)) {
+    return null;
+  }
+
+  const fx = waehrungIstEur ? 1 : (ezb as number);
+
+  return {
+    depot_id: portfolioId,
+    isin,
+    fondsname: fundName,
+    fondsart,
+    teilfreistellungssatz: teilfreistellung,
+    anzahl_anteile: unitsEnd,
+    kurs_jahresanfang: startPrice,
+    kurs_jahresende: endPrice,
+    ausschuettungen: asNumber(raw.distributions) ?? 0,
+    waehrung: currency,
+    ezb_kurs: fx,
+    kauf_datum: asString(raw.purchase_date) || null,
+    verkauf_datum: asString(raw.verkauf_datum) || null,
+    ist_verkaufsjahr: false,
+    steuerjahr: yearNum,
+  };
+}
 
 export function CalculationSummary({ clientId, year }: CalculationSummaryProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
   const [result, setResult] = useState<MandantErgebnis | null>(null);
   const [portfolioMetaById, setPortfolioMetaById] = useState<Record<string, PortfolioMeta>>({});
   const [portfolioIds, setPortfolioIds] = useState<string[]>([]);
   const [displayRowsByDepot, setDisplayRowsByDepot] = useState<Record<string, DisplayRow[]>>({});
+  const [excludedRows, setExcludedRows] = useState<ExcludedRow[]>([]);
+  const [hasEligiblePositions, setHasEligiblePositions] = useState(false);
   const [collapsedDepotIds, setCollapsedDepotIds] = useState<string[]>([]);
+
+  const yearNum = Number(year);
 
   useEffect(() => {
     let isActive = true;
@@ -78,13 +150,12 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
     async function loadCalculationData() {
       setIsLoading(true);
       setErrorMessage(null);
-      setWarnings([]);
 
       const { data: taxYear, error: taxYearError } = await supabase
         .from("tax_years")
         .select("id")
         .eq("client_id", clientId)
-        .eq("year", Number(year))
+        .eq("year", yearNum)
         .maybeSingle<{ id: string }>();
 
       if (!isActive) return;
@@ -107,7 +178,7 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
         return;
       }
 
-      const portfolioIds = portfolios.map((portfolio) => portfolio.id);
+      const pIds = portfolios.map((portfolio) => portfolio.id);
       const metaMap: Record<string, PortfolioMeta> = {};
       for (const portfolio of portfolios) {
         metaMap[portfolio.id] = {
@@ -117,12 +188,13 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
         };
       }
       setPortfolioMetaById(metaMap);
-      setPortfolioIds(portfolios.map((portfolio) => portfolio.id));
+      setPortfolioIds(pIds);
 
-      if (portfolioIds.length === 0) {
-        setResult(
-          calculateMandant([], 0),
-        );
+      if (pIds.length === 0) {
+        setResult(null);
+        setDisplayRowsByDepot({});
+        setExcludedRows([]);
+        setHasEligiblePositions(false);
         setIsLoading(false);
         return;
       }
@@ -130,7 +202,7 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
       const { data: fundPositions, error: fundPositionsError } = await supabase
         .from("fund_positions")
         .select("*")
-        .in("portfolio_id", portfolioIds)
+        .in("portfolio_id", pIds)
         .returns<Record<string, unknown>[]>();
 
       if (!isActive) return;
@@ -140,135 +212,102 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
         return;
       }
 
+      const excluded: ExcludedRow[] = [];
       const depotsForCalculation: Array<{ depot_id: string; positionen: FondsPosition[] }> = [];
-      const localWarnings: string[] = [];
-      const rawDisplayRowsByDepot: Record<string, DisplayRow[]> = {};
+      const calculatedDisplayRowsByDepot: Record<string, DisplayRow[]> = {};
 
-      for (const portfolioId of portfolioIds) {
+      for (const portfolioId of pIds) {
         const positions = fundPositions.filter((position) => asString(position.portfolio_id) === portfolioId);
         const mapped: FondsPosition[] = [];
-        rawDisplayRowsByDepot[portfolioId] = [];
+        calculatedDisplayRowsByDepot[portfolioId] = [];
 
         for (const raw of positions) {
           const positionId = asString(raw.id) || crypto.randomUUID();
           const fundName = asString(raw.fund_name) || "Unbenannter Fonds";
-          const isin = asString(raw.isin);
-          const currency = asString(raw.currency) || "EUR";
-          const startPrice = asNumber(raw.price_start);
-          const endPrice = asNumber(raw.price_end);
-          const unitsEnd = asNumber(raw.units_end);
-          const unitsStart = asNumber(raw.units_start);
-          const quantity = unitsStart ?? unitsEnd;
+          const isin = asString(raw.isin) || "—";
 
-          const taxFundTypeText =
-            asString(raw.tax_fund_type) || asString(raw.fondsart) || "sonstige";
-
-          const pushSkipped = (reason: string) => {
-            console.warn("[Berechnung] Position übersprungen", {
-              portfolio_id: portfolioId,
-              position_id: positionId,
-              fund_name: fundName,
-              isin: isin || null,
-              reason,
-            });
-            localWarnings.push(`${fundName} (${isin || "ohne ISIN"}): ${reason}`);
-            rawDisplayRowsByDepot[portfolioId].push({
-              id: positionId,
-              fundName,
-              isin: isin || "—",
-              fundType: taxFundTypeText,
-              teilfreistellung: null,
-              vorabpauschale: null,
-              steuerpflichtig: null,
-              kest: null,
-              soli: null,
-              skipped: true,
-              skipReason: reason,
-            });
-          };
-
-          if (!isin) {
-            pushSkipped("ISIN fehlt.");
-            continue;
-          }
-          if (unitsEnd === null) {
-            pushSkipped("Anteile 31.12. fehlen.");
-            continue;
-          }
-          if (startPrice === null) {
-            pushSkipped("NAV 01.01. fehlt.");
-            continue;
-          }
-          if (endPrice === null) {
-            pushSkipped("NAV 31.12. fehlt.");
-            continue;
-          }
-          if (quantity === null) {
-            pushSkipped("Anteile fehlen.");
-            continue;
-          }
-
-          const distributions = asNumber(raw.distributions) ?? 0;
-          const ezb =
-            asNumber(raw.ezb_kurs_jahresende) ??
-            asNumber(raw.ezb_kurs) ??
-            asNumber(raw.ezb_rate) ??
-            1;
-          const teilfreistellungRaw = asNumber(raw.partial_exemption_rate);
-          const fondsart = toFundType(taxFundTypeText);
-          const teilfreistellung =
-            teilfreistellungRaw !== null ? Math.max(0, Math.min(1, teilfreistellungRaw)) : getTeilfreistellungssatz(fondsart);
-
-          mapped.push({
-            depot_id: portfolioId,
-            isin,
-            fondsname: fundName,
-            fondsart,
-            teilfreistellungssatz: teilfreistellung,
-            anzahl_anteile: quantity,
-            kurs_jahresanfang: startPrice,
-            kurs_jahresende: endPrice,
-            ausschuettungen: distributions,
-            waehrung: currency,
-            ezb_kurs: ezb,
-            kauf_datum: asString(raw.kauf_datum) || asString(raw.purchase_date) || null,
-            verkauf_datum: asString(raw.verkauf_datum) || null,
-            ist_verkaufsjahr: false,
-            steuerjahr: Number(year),
+          const input = rowToValidationInput({
+            isin: asString(raw.isin),
+            fund_name: asString(raw.fund_name),
+            tax_fund_type: asString(raw.tax_fund_type),
+            units_end: asNumber(raw.units_end),
+            price_start: asNumber(raw.price_start),
+            price_end: asNumber(raw.price_end),
+            currency: asString(raw.currency),
+            distributions: asNumber(raw.distributions),
+            ezb_kurs_jahresende: asNumber(raw.ezb_kurs_jahresende),
+            ezb_kurs: asNumber(raw.ezb_kurs),
+            ezb_rate: asNumber(raw.ezb_rate),
+            review_status: asString(raw.review_status),
+            product_type: asString(raw.product_type),
           });
+
+          const v = validateFundPosition(input);
+          const reviewed = mapReviewStatusGeprueft(asString(raw.review_status));
+          const dbReady = asBoolean(raw.calculation_ready);
+          const eligible = reviewed && dbReady && v.calculationReady;
+
+          const storedErrors = parseStoredErrors(raw.validation_errors);
+          const errorLines = storedErrors.length > 0 ? storedErrors : v.errors;
+
+          if (!eligible) {
+            excluded.push({
+              id: positionId,
+              portfolioId,
+              fundName,
+              isin,
+              errors: errorLines.length > 0 ? errorLines : ["Position ist nicht berechnungsfähig."],
+            });
+            continue;
+          }
+
+          const built = buildFundRow(raw, portfolioId, yearNum);
+          if (!built) {
+            excluded.push({
+              id: positionId,
+              portfolioId,
+              fundName,
+              isin,
+              errors: ["Interne Aufbereitung der Position fehlgeschlagen (fehlende Kurs- oder FX-Daten)."],
+            });
+            continue;
+          }
+
+          mapped.push(built);
         }
 
         depotsForCalculation.push({ depot_id: portfolioId, positionen: mapped });
       }
 
+      const totalEligible = depotsForCalculation.reduce((s, d) => s + d.positionen.length, 0);
+      setHasEligiblePositions(totalEligible > 0);
+      setExcludedRows(excluded);
+
+      if (totalEligible === 0) {
+        setResult(null);
+        setDisplayRowsByDepot({});
+        setIsLoading(false);
+        return;
+      }
+
       const mandantResult = calculateMandant(depotsForCalculation, 0);
-      const calculatedDisplayRowsByDepot: Record<string, DisplayRow[]> = {};
+
       for (const depot of mandantResult.depot_ergebnisse) {
         calculatedDisplayRowsByDepot[depot.depot_id] = depot.fonds_ergebnisse.map((entry) => ({
           id: `${depot.depot_id}-${entry.isin}-${entry.fondsname}`,
           fundName: entry.fondsname,
           isin: entry.isin,
-          fundType: "—",
+          taxFundTypeLabel: taxFundTypeDisplayLabel(entry.fondsart),
           teilfreistellung: entry.teilfreistellungssatz,
           vorabpauschale: entry.vorabpauschale,
           steuerpflichtig: entry.steuerpflichtig,
           kest: entry.kest,
           soli: entry.soli,
-          skipped: false,
-          skipReason: null,
         }));
       }
 
-      const mergedRowsByDepot: Record<string, DisplayRow[]> = {};
-      for (const portfolioId of portfolioIds) {
-        const validRows = calculatedDisplayRowsByDepot[portfolioId] ?? [];
-        const skippedRows = rawDisplayRowsByDepot[portfolioId] ?? [];
-        mergedRowsByDepot[portfolioId] = [...validRows, ...skippedRows];
-      }
-
-      setWarnings(localWarnings);
       setResult(mandantResult);
-      setDisplayRowsByDepot(mergedRowsByDepot);
+      setDisplayRowsByDepot(calculatedDisplayRowsByDepot);
       setIsLoading(false);
     }
 
@@ -276,7 +315,7 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
     return () => {
       isActive = false;
     };
-  }, [clientId, year]);
+  }, [clientId, yearNum]);
 
   const calculatedPositionCount = useMemo(() => {
     if (!result) return 0;
@@ -294,7 +333,7 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
       <section className="rounded-xl border border-zinc-300 bg-white p-6 shadow-sm">
         <h2 className="text-2xl font-semibold tracking-tight text-zinc-900">Vorabpauschale {year}</h2>
         <p className="mt-1 text-sm text-zinc-600">
-          Berechnungsübersicht für geprüfte Fondspositionen im Steuerjahr {year}.
+          Es werden nur Positionen mit Prüfstatus „geprüft“, gesetztem Berechnungsflag und vollständiger Validierung berücksichtigt.
         </p>
         {isLoading ? (
           <p className="mt-4 text-sm text-zinc-600">Berechnung wird vorbereitet...</p>
@@ -302,6 +341,13 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
           <p className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
             {errorMessage}
           </p>
+        ) : !hasEligiblePositions ? (
+          <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950">
+            <p className="font-medium">Keine berechnungsfähigen Positionen</p>
+            <p className="mt-1 text-amber-900">
+              Es sind keine Fondspositionen für die Berechnung freigegeben. Bitte in der Prüftabelle alle Pflichtfelder ergänzen, den Status auf „geprüft“ setzen und speichern bzw. den Statuswechsel ausführen, bis die Position als berechnungsfähig gilt.
+            </p>
+          </div>
         ) : result ? (
           <div className="mt-4 grid gap-3 text-sm md:grid-cols-2 lg:grid-cols-5">
             <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2">
@@ -321,20 +367,29 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
               <p className="font-semibold text-zinc-900">{formatEur(result.kirchensteuer_gesamt)} EUR</p>
             </div>
             <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Positionen</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">Positionen (berechnet)</p>
               <p className="font-semibold text-zinc-900">{calculatedPositionCount}</p>
-              <p className="text-xs text-zinc-500">Übersprungen: {warnings.length}</p>
             </div>
           </div>
         ) : null}
       </section>
 
-      {warnings.length > 0 ? (
+      {excludedRows.length > 0 ? (
         <section className="rounded-xl border border-zinc-300 bg-zinc-50 p-4 shadow-sm">
-          <h3 className="text-sm font-semibold text-zinc-900">Übersprungene Positionen</h3>
-          <ul className="mt-2 space-y-1 text-sm text-zinc-700">
-            {warnings.map((warning) => (
-              <li key={warning}>- {warning}</li>
+          <h3 className="text-sm font-semibold text-zinc-900">Nicht berechnungsfähige Positionen</h3>
+          <ul className="mt-3 space-y-3 text-sm text-zinc-800">
+            {excludedRows.map((row) => (
+              <li key={row.id} className="rounded-md border border-zinc-200 bg-white px-3 py-2">
+                <p className="font-medium text-zinc-900">
+                  {row.fundName}{" "}
+                  <span className="font-normal text-zinc-600">({row.isin})</span>
+                </p>
+                <ul className="mt-1 list-inside list-disc text-zinc-700">
+                  {row.errors.map((e) => (
+                    <li key={e}>{e}</li>
+                  ))}
+                </ul>
+              </li>
             ))}
           </ul>
         </section>
@@ -344,7 +399,7 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
         const meta = portfolioMetaById[portfolioId];
         const rows = displayRowsByDepot[portfolioId] ?? [];
         const depot = result?.depot_ergebnisse.find((entry) => entry.depot_id === portfolioId);
-        const hasCalculatedRows = rows.some((row) => !row.skipped);
+        const hasCalculatedRows = rows.length > 0;
         const isCollapsed = collapsedDepotIds.includes(portfolioId);
 
         return (
@@ -375,20 +430,20 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
                   </button>
                 </div>
               </div>
-              {!hasCalculatedRows ? (
+              {!hasEligiblePositions ? null : !hasCalculatedRows ? (
                 <p className="mt-1 text-xs text-zinc-700">
-                  ⚠ Keine berechenbaren Positionen vorhanden (alle Positionen übersprungen).
+                  In diesem Depot sind keine berechnungsfähigen Positionen enthalten.
                 </p>
               ) : null}
             </div>
-            {!isCollapsed ? (
+            {!isCollapsed && hasEligiblePositions ? (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-zinc-200 text-sm">
                 <thead className="bg-zinc-50 text-left text-zinc-600">
                   <tr>
                     <th className="w-[24%] px-4 py-2 font-medium">Fondsname</th>
                     <th className="w-[14%] px-4 py-2 font-medium">ISIN</th>
-                    <th className="w-[14%] px-4 py-2 font-medium">Fondsart</th>
+                    <th className="w-[14%] px-4 py-2 font-medium">Steuerliche Fondsart</th>
                     <th className="w-[12%] px-4 py-2 text-right font-medium">Vorabpauschale</th>
                     <th className="w-[10%] px-4 py-2 text-right font-medium">Teilfreistellung</th>
                     <th className="w-[12%] px-4 py-2 text-right font-medium">Steuerpflichtig</th>
@@ -400,40 +455,31 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
                   {rows.map((row, index) => (
                     <tr
                       key={row.id}
-                      className={`${index % 2 === 1 ? "bg-zinc-50/60" : "bg-white"} ${
-                        row.skipped ? "text-zinc-500" : "text-zinc-700"
-                      }`}
+                      className={`${index % 2 === 1 ? "bg-zinc-50/60" : "bg-white"} text-zinc-700`}
                     >
                       <td className="px-4 py-2">{row.fundName}</td>
                       <td className="px-4 py-2">{row.isin}</td>
-                      <td className="px-4 py-2">
-                        {row.fundType === "—" || row.fundType.trim().length === 0 ? (
-                          <span className="text-zinc-400">Nicht klassifiziert</span>
-                        ) : (
-                          row.fundType
-                        )}
-                      </td>
+                      <td className="px-4 py-2">{row.taxFundTypeLabel}</td>
+                      <td className="px-4 py-2 text-right">{`${formatEur(row.vorabpauschale ?? 0)} EUR`}</td>
                       <td className="px-4 py-2 text-right">
-                        {row.skipped ? `⚠ ${row.skipReason}` : `${formatEur(row.vorabpauschale ?? 0)} EUR`}
-                      </td>
-                      <td className="px-4 py-2 text-right">
-                        {row.teilfreistellung === null || row.fundType === "—" || row.fundType.trim().length === 0
+                        {row.teilfreistellung === null
                           ? "—"
                           : `${(row.teilfreistellung * 100).toFixed(0)} %`}
                       </td>
-                      <td className="px-4 py-2 text-right">{row.steuerpflichtig === null ? "—" : `${formatEur(row.steuerpflichtig)} EUR`}</td>
-                      <td className="px-4 py-2 text-right">{row.kest === null ? "—" : `${formatEur(row.kest)} EUR`}</td>
-                      <td className="px-4 py-2 text-right">{row.soli === null ? "—" : `${formatEur(row.soli)} EUR`}</td>
+                      <td className="px-4 py-2 text-right">{`${formatEur(row.steuerpflichtig ?? 0)} EUR`}</td>
+                      <td className="px-4 py-2 text-right">{`${formatEur(row.kest ?? 0)} EUR`}</td>
+                      <td className="px-4 py-2 text-right">{`${formatEur(row.soli ?? 0)} EUR`}</td>
                     </tr>
                   ))}
                   {rows.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="px-4 py-4 text-sm text-zinc-500">
-                        Keine Fondspositionen in diesem Depot gefunden.
+                        Keine berechnungsfähigen Fondspositionen in diesem Depot.
                       </td>
                     </tr>
                   ) : null}
                 </tbody>
+                {hasCalculatedRows ? (
                 <tfoot className="border-t border-zinc-300 bg-zinc-50">
                   <tr>
                     <td className="px-4 py-2 text-right font-semibold text-zinc-900" colSpan={3}>
@@ -454,6 +500,7 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
                     </td>
                   </tr>
                 </tfoot>
+                ) : null}
               </table>
             </div>
             ) : null}
@@ -461,7 +508,7 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
         );
       })}
 
-      {result ? (
+      {result && hasEligiblePositions ? (
         <section className="rounded-xl border border-zinc-900 bg-zinc-50 p-5 shadow-sm">
           <h3 className="text-base font-semibold text-zinc-900">Gesamtsumme Steuerjahr {year}</h3>
           <div className="mt-3 grid gap-2 text-sm text-zinc-800 md:grid-cols-2 lg:grid-cols-5">

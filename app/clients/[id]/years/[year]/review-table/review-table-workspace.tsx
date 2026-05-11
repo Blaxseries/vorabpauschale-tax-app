@@ -3,7 +3,13 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 
 import { FundPositionDossier, type FundPositionDossierRow } from "@/components/fund-position-dossier";
+import { TAX_FUND_TYPE_SELECT, teilfreistellungAnteilTextForTaxType } from "@/lib/fund-position-metadata";
 import { supabase } from "@/lib/supabase";
+import {
+  fundPositionIssueBadges,
+  rowToValidationInput,
+  validateFundPosition,
+} from "@/lib/validate-fund-position";
 
 type ReviewStatus = "offen" | "in Prüfung" | "geprüft";
 type FundPositionRow = FundPositionDossierRow;
@@ -24,7 +30,8 @@ type Block = {
 type PositionForm = {
   isin: string;
   fund_name: string;
-  fund_type: string;
+  product_type: string;
+  tax_fund_type: string;
   currency: string;
   units_start: string;
   units_end: string;
@@ -42,7 +49,8 @@ type ReviewTableWorkspaceProps = {
 const EMPTY_FORM: PositionForm = {
   isin: "",
   fund_name: "",
-  fund_type: "",
+  product_type: "",
+  tax_fund_type: "sonstige",
   currency: "EUR",
   units_start: "",
   units_end: "",
@@ -86,12 +94,8 @@ function formatUnits(value: number | null): string {
   return value.toLocaleString("de-DE", { minimumFractionDigits: precision, maximumFractionDigits: precision });
 }
 
-function getHint(position: FundPositionRow): string {
-  const issues: string[] = [];
-  if (position.price_start === null) issues.push("price_start fehlt");
-  if (position.price_end === null) issues.push("price_end fehlt");
-  if (position.units_end === null) issues.push("Anteile 31.12. fehlen");
-  return issues.join("; ");
+function positionValidation(position: FundPositionRow) {
+  return validateFundPosition(rowToValidationInput(position));
 }
 
 function getDepotReviewStatus(
@@ -113,9 +117,43 @@ function toNullableNumber(input: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function taxFundTypeLabel(raw: string | null | undefined): string {
+  const key = (raw ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+  const hit = TAX_FUND_TYPE_SELECT.find((o) => o.key === key);
+  return hit?.label ?? (raw?.trim() ? raw : "—");
+}
+
+function formatCurrencyFx(position: FundPositionRow): string {
+  const cur = (position.currency ?? "EUR").toUpperCase();
+  if (cur === "EUR") return "EUR";
+  const fx =
+    position.ezb_kurs_jahresende ??
+    position.ezb_kurs ??
+    position.ezb_rate;
+  if (typeof fx === "number" && Number.isFinite(fx) && fx > 0) {
+    return `${cur} / ${fx.toLocaleString("de-DE", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}`;
+  }
+  return `${cur} / —`;
+}
+
+function canBulkApproveDepot(block: Block): { ok: true } | { ok: false; message: string } {
+  for (const position of block.positions) {
+    const v = validateFundPosition(
+      rowToValidationInput({ ...position, review_status: "geprüft" }),
+    );
+    if (!v.calculationReady) {
+      const name = position.fund_name?.trim() || position.isin?.trim() || "Unbenannte Position";
+      return {
+        ok: false,
+        message: `Depotfreigabe nicht möglich: Bei „${name}“ fehlen noch Pflichtangaben (${v.errors[0] ?? "Details in der Akte"}).`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspaceProps) {
   const [blocks, setBlocks] = useState<Block[]>([]);
-  const [taxYearId, setTaxYearId] = useState<string | null>(null);
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<string[]>([]);
   const [expandedPositionIds, setExpandedPositionIds] = useState<string[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -143,8 +181,6 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
       setIsLoading(false);
       return;
     }
-    setTaxYearId(taxYear.id);
-
     const { data: portfolios, error: portfoliosError } = await supabase
       .from("portfolios")
       .select("id, bank_name, account_number")
@@ -184,7 +220,9 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async loadData aktualisiert Zustand nach Supabase
     void loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bewusst nur bei clientId/Jahr neu laden
   }, [clientId, year]);
 
   const summary = useMemo(() => {
@@ -193,7 +231,7 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
       depotCount: blocks.length,
       positionCount: positions.length,
       reviewed: positions.filter((p) => mapReviewStatus(p.review_status) === "geprüft").length,
-      open: positions.filter((p) => getHint(p).length > 0).length,
+      calculationReady: positions.filter((p) => positionValidation(p).calculationReady).length,
     };
   }, [blocks]);
 
@@ -211,9 +249,16 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
 
   async function handleCycleStatus(position: FundPositionRow) {
     const next = nextStatus(mapReviewStatus(position.review_status));
+    const nextDb = toDbReviewStatus(next);
+    const v = validateFundPosition(rowToValidationInput({ ...position, review_status: nextDb }));
     const { error } = await supabase
       .from("fund_positions")
-      .update({ review_status: toDbReviewStatus(next), reviewed_at: new Date().toISOString() })
+      .update({
+        review_status: nextDb,
+        reviewed_at: new Date().toISOString(),
+        calculation_ready: v.calculationReady,
+        validation_errors: v.errors,
+      })
       .eq("id", position.id);
     if (error) {
       setErrorMessage(`Status konnte nicht aktualisiert werden: ${error.message}`);
@@ -223,9 +268,16 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
   }
 
   async function handleSetStatus(position: FundPositionRow, status: ReviewStatus) {
+    const nextDb = toDbReviewStatus(status);
+    const v = validateFundPosition(rowToValidationInput({ ...position, review_status: nextDb }));
     const { error } = await supabase
       .from("fund_positions")
-      .update({ review_status: toDbReviewStatus(status), reviewed_at: new Date().toISOString() })
+      .update({
+        review_status: nextDb,
+        reviewed_at: new Date().toISOString(),
+        calculation_ready: v.calculationReady,
+        validation_errors: v.errors,
+      })
       .eq("id", position.id);
     if (error) {
       setErrorMessage(`Status konnte nicht aktualisiert werden: ${error.message}`);
@@ -236,10 +288,21 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
 
   async function handleApproveDepot(block: Block) {
     if (block.positions.length === 0) return;
+    const gate = canBulkApproveDepot(block);
+    if (!gate.ok) {
+      setErrorMessage(gate.message);
+      return;
+    }
     const ids = block.positions.map((position) => position.id);
+    const now = new Date().toISOString();
     const { error } = await supabase
       .from("fund_positions")
-      .update({ review_status: "geprüft", reviewed_at: new Date().toISOString() })
+      .update({
+        review_status: "geprüft",
+        reviewed_at: now,
+        calculation_ready: true,
+        validation_errors: [],
+      })
       .in("id", ids);
     if (error) {
       setErrorMessage(`Depotfreigabe fehlgeschlagen: ${error.message}`);
@@ -276,23 +339,72 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
 
     const cur = form.currency.trim().toUpperCase() || "EUR";
     const ezbDefault = cur === "EUR" ? 1 : null;
+    const now = new Date().toISOString();
+
+    const unitsEnd = toNullableNumber(form.units_end);
+    const priceStart = toNullableNumber(form.price_start);
+    const priceEnd = toNullableNumber(form.price_end);
+
+    const draftRow: FundPositionRow = {
+      id: "draft",
+      portfolio_id: modalPortfolioId,
+      isin: form.isin.trim() || null,
+      fund_name: form.fund_name.trim() || null,
+      product_type: form.product_type.trim() || null,
+      tax_fund_type: form.tax_fund_type.trim() || null,
+      partial_exemption_rate: null,
+      currency: cur,
+      units_start: toNullableNumber(form.units_start),
+      units_end: unitsEnd,
+      purchase_date: form.purchase_date.trim() || null,
+      price_start: priceStart,
+      price_end: priceEnd,
+      nav_start_local: null,
+      nav_end_local: null,
+      distributions: toNullableNumber(form.distributions) ?? 0,
+      review_status: "offen",
+      data_source: "manuell",
+      nav_data_source: null,
+      ezb_data_source: null,
+      ezb_rate: ezbDefault,
+      ezb_kurs: ezbDefault,
+      ezb_kurs_jahresanfang: ezbDefault,
+      ezb_kurs_jahresende: ezbDefault,
+      advisor_note: null,
+      calculation_ready: false,
+      validation_errors: [],
+      created_at: null,
+      updated_at: null,
+      reviewed_at: now,
+      reviewed_by: "manual-ui",
+      statement_upload_id: null,
+    };
+
+    const validation = validateFundPosition(rowToValidationInput(draftRow));
 
     const payload: Record<string, unknown> = {
       portfolio_id: modalPortfolioId,
       isin: form.isin.trim() || null,
       fund_name: form.fund_name.trim() || null,
-      fund_type: form.fund_type.trim() || null,
+      product_type: form.product_type.trim() || null,
+      tax_fund_type: form.tax_fund_type.trim() || "sonstige",
       currency: cur,
       units_start: toNullableNumber(form.units_start),
-      units_end: toNullableNumber(form.units_end),
-      price_start: toNullableNumber(form.price_start),
-      price_end: toNullableNumber(form.price_end),
+      units_end: unitsEnd,
+      price_start: priceStart,
+      price_end: priceEnd,
       distributions: toNullableNumber(form.distributions) ?? 0,
       purchase_date: form.purchase_date.trim() || null,
       data_source: "manuell",
       ezb_rate: ezbDefault,
-      reviewed_at: new Date().toISOString(),
+      ezb_kurs: ezbDefault,
+      ezb_kurs_jahresanfang: ezbDefault,
+      ezb_kurs_jahresende: ezbDefault,
+      reviewed_at: now,
       reviewed_by: "manual-ui",
+      review_status: "offen",
+      calculation_ready: validation.calculationReady,
+      validation_errors: validation.errors,
     };
 
     const { error } = await supabase.from("fund_positions").insert(payload);
@@ -326,18 +438,20 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
     );
   }
 
+  const tableColSpan = 12;
+
   return (
     <div className="space-y-3">
       <section className="rounded-xl border border-zinc-300 bg-white p-6 shadow-sm">
         <h2 className="text-3xl font-semibold tracking-tight text-zinc-900">Prüftabelle Steuerjahr {year}</h2>
         <p className="mt-2 text-sm text-zinc-600">
-          Fachliche Gegenprüfung der extrahierten und angereicherten Depotdaten vor der Berechnung.
+          Manuelle Kontrolle der Fondspositionen. In die Vorabpauschale fließen nur geprüfte und vollständig validierte Positionen ein.
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-5 text-sm text-zinc-700">
           <p><span className="font-medium text-zinc-900">Depots</span> {summary.depotCount}</p>
           <p><span className="font-medium text-zinc-900">Positionen</span> {summary.positionCount}</p>
           <p><span className="font-medium text-zinc-900">Geprüft</span> {summary.reviewed}</p>
-          <p><span className="font-medium text-zinc-900">Offen</span> {summary.open}</p>
+          <p><span className="font-medium text-zinc-900">Berechnungsfähig</span> {summary.calculationReady}</p>
         </div>
         {errorMessage ? (
           <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -350,7 +464,7 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
         const isCollapsed = collapsedBlockIds.includes(block.id);
         const depotStatus = getDepotReviewStatus(block.positions);
         const allReviewed = depotStatus === "geprüft";
-        const openItems = block.positions.filter((position) => getHint(position).length > 0).length;
+        const notReadyCount = block.positions.filter((p) => !positionValidation(p).calculationReady).length;
 
         return (
           <section
@@ -391,7 +505,7 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
                   {allReviewed ? "geprüft ✓" : depotStatus}
                 </span>
                 <span className="text-zinc-600">Positionen: {block.positions.length}</span>
-                <span className="text-zinc-600">Offene Werte: {openItems}</span>
+                <span className="text-zinc-600">Noch nicht berechnungsfähig: {notReadyCount}</span>
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 <button
@@ -420,64 +534,78 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
 
             {!isCollapsed ? (
               <div className="mt-3 overflow-x-auto">
-                <table className="min-w-[1200px] divide-y divide-zinc-200 text-sm">
+                <table className="min-w-[1100px] divide-y divide-zinc-200 text-xs">
                   <thead className="bg-zinc-50 text-left text-zinc-600">
                     <tr>
-                      <th className="px-3 py-2 font-medium">Fondsname</th>
-                      <th className="px-3 py-2 font-medium">ISIN</th>
-                      <th className="px-3 py-2 font-medium">Währung</th>
-                      <th className="px-3 py-2 font-medium text-right">Anteile 01.01.</th>
-                      <th className="px-3 py-2 font-medium text-right">Anteile 31.12.</th>
-                      <th className="px-3 py-2 font-medium text-right">NAV 01.01.</th>
-                      <th className="px-3 py-2 font-medium text-right">NAV 31.12.</th>
-                      <th className="px-3 py-2 font-medium text-right">Ausschüttungen</th>
-                      <th className="px-3 py-2 font-medium">Prüfstatus</th>
-                      <th className="px-3 py-2 font-medium">Hinweis</th>
-                      <th className="px-3 py-2 font-medium">Aktion</th>
+                      <th className="px-2 py-2 font-medium">Fonds / ISIN</th>
+                      <th className="px-2 py-2 font-medium">Produktart</th>
+                      <th className="px-2 py-2 font-medium">Steuerliche Fondsart</th>
+                      <th className="px-2 py-2 font-medium">Teilfreistellung</th>
+                      <th className="px-2 py-2 font-medium text-right">Bestand 31.12.</th>
+                      <th className="px-2 py-2 font-medium text-right">NAV 01.01.</th>
+                      <th className="px-2 py-2 font-medium text-right">NAV 31.12.</th>
+                      <th className="px-2 py-2 font-medium text-right">Ausschüttungen</th>
+                      <th className="px-2 py-2 font-medium">Währung / FX</th>
+                      <th className="px-2 py-2 font-medium">Prüfstatus</th>
+                      <th className="px-2 py-2 font-medium">Berechnungsfähig</th>
+                      <th className="px-2 py-2 font-medium">Aktion</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-200">
                     {block.positions.map((position, index) => {
                       const status = mapReviewStatus(position.review_status);
-                      const hint = getHint(position);
+                      const val = positionValidation(position);
+                      const badges = fundPositionIssueBadges(rowToValidationInput(position));
                       const isExpanded = expandedPositionIds.includes(position.id);
                       return (
                         <Fragment key={position.id}>
                           <tr className={`align-top text-zinc-700 [font-variant-numeric:tabular-nums] ${index % 2 === 1 ? "bg-zinc-50/50" : "bg-white"}`}>
-                            <td className="px-3 py-2.5 font-medium text-zinc-900">{position.fund_name ?? "—"}</td>
-                            <td className="px-3 py-2.5">{position.isin ?? "—"}</td>
-                            <td className="px-3 py-2.5">{position.currency ?? "EUR"}</td>
-                            <td className="px-3 py-2.5 text-right">{formatUnits(position.units_start)}</td>
-                            <td className="px-3 py-2.5 text-right">
-                              {position.units_end === null ? <span title="Pflichtfeld fehlt">⚠</span> : null} {formatUnits(position.units_end)}
+                            <td className="max-w-[200px] px-2 py-2">
+                              <p className="font-medium leading-snug text-zinc-900">{position.fund_name?.trim() || "—"}</p>
+                              <p className="mt-0.5 text-[11px] text-zinc-500">{position.isin?.trim() || "—"}</p>
+                              {badges.length > 0 ? (
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {badges.map((b) => (
+                                    <span
+                                      key={b}
+                                      className="inline-block rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-900"
+                                    >
+                                      {b}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : null}
                             </td>
-                            <td className="px-3 py-2.5 text-right">
-                              {position.price_start === null ? <span title="Pflichtfeld fehlt">⚠</span> : null} {formatNumber(position.price_start)}
+                            <td className="px-2 py-2">{position.product_type?.trim() || "—"}</td>
+                            <td className="px-2 py-2">{taxFundTypeLabel(position.tax_fund_type)}</td>
+                            <td className="px-2 py-2">
+                              {teilfreistellungAnteilTextForTaxType(position.tax_fund_type, position.partial_exemption_rate)}
                             </td>
-                            <td className="px-3 py-2.5 text-right">
-                              {position.price_end === null ? <span title="Pflichtfeld fehlt">⚠</span> : null} {formatNumber(position.price_end)}
-                            </td>
-                            <td className="px-3 py-2.5 text-right">{formatNumber(position.distributions)}</td>
-                            <td className="px-3 py-2.5">
+                            <td className="px-2 py-2 text-right">{formatUnits(position.units_end)}</td>
+                            <td className="px-2 py-2 text-right">{formatNumber(position.price_start)}</td>
+                            <td className="px-2 py-2 text-right">{formatNumber(position.price_end)}</td>
+                            <td className="px-2 py-2 text-right">{formatNumber(position.distributions)}</td>
+                            <td className="px-2 py-2 whitespace-nowrap">{formatCurrencyFx(position)}</td>
+                            <td className="px-2 py-2">
                               <select
                                 value={status}
                                 onChange={(event) => void handleSetStatus(position, event.target.value as ReviewStatus)}
-                                className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700"
+                                className="max-w-[120px] rounded border border-zinc-300 bg-white px-1.5 py-1 text-[11px] text-zinc-700"
                               >
                                 <option value="offen">offen</option>
                                 <option value="in Prüfung">in Prüfung</option>
                                 <option value="geprüft">geprüft</option>
                               </select>
                             </td>
-                            <td className="px-3 py-2.5">
-                              {hint ? (
-                                <span className="text-xs text-zinc-700">⚠ {hint}</span>
+                            <td className="px-2 py-2">
+                              {val.calculationReady ? (
+                                <span className="text-emerald-800">Ja</span>
                               ) : (
-                                <span className="text-xs text-zinc-500">—</span>
+                                <span className="text-zinc-600">Nein</span>
                               )}
                             </td>
-                            <td className="px-3 py-2.5">
-                              <div className="relative flex items-center gap-1">
+                            <td className="px-2 py-2">
+                              <div className="relative flex flex-wrap items-center gap-1">
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -489,7 +617,7 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
                                       );
                                     }
                                   }}
-                                  className="rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
+                                  className="rounded border border-zinc-300 px-2 py-1 text-[11px] hover:bg-zinc-100"
                                 >
                                   Akte
                                 </button>
@@ -500,7 +628,7 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
                                       current === position.id ? null : position.id,
                                     )
                                   }
-                                  className="rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
+                                  className="rounded border border-zinc-300 px-2 py-1 text-[11px] hover:bg-zinc-100"
                                 >
                                   ⋯
                                 </button>
@@ -509,21 +637,21 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
                                     <button
                                       type="button"
                                       onClick={() => void handleCycleStatus(position)}
-                                      className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100"
+                                      className="block w-full rounded px-2 py-1 text-left text-[11px] text-zinc-700 hover:bg-zinc-100"
                                     >
                                       Status wechseln
                                     </button>
                                     <button
                                       type="button"
                                       onClick={() => openDossierForEdit(position)}
-                                      className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100"
+                                      className="block w-full rounded px-2 py-1 text-left text-[11px] text-zinc-700 hover:bg-zinc-100"
                                     >
                                       Bearbeiten
                                     </button>
                                     <button
                                       type="button"
                                       onClick={() => void handleDelete(position)}
-                                      className="block w-full rounded px-2 py-1 text-left text-xs text-red-700 hover:bg-red-50"
+                                      className="block w-full rounded px-2 py-1 text-left text-[11px] text-red-700 hover:bg-red-50"
                                     >
                                       Löschen
                                     </button>
@@ -534,8 +662,8 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
                           </tr>
                           {isExpanded ? (
                             <tr>
-                              <td colSpan={11} className="bg-zinc-50 px-3 py-4">
-                                <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+                              <td colSpan={tableColSpan} className="border-t border-zinc-200 bg-zinc-50 px-2 py-2">
+                                <div className="max-h-[min(70vh,560px)] overflow-y-auto rounded-lg border border-zinc-200 bg-white p-3 shadow-sm">
                                   <FundPositionDossier
                                     key={`${position.id}-${dossierEditId === position.id ? "e" : "v"}`}
                                     position={position}
@@ -559,7 +687,7 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
                     })}
                     {block.positions.length === 0 ? (
                       <tr>
-                        <td colSpan={11} className="px-3 py-4 text-center text-zinc-500">
+                        <td colSpan={tableColSpan} className="px-3 py-4 text-center text-zinc-500">
                           Keine Fondspositionen für dieses Depot vorhanden.
                         </td>
                       </tr>
@@ -580,46 +708,57 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
               <div>
                 <h4 className="text-sm font-semibold text-zinc-900">Fondsdaten</h4>
                 <div className="mt-2 grid gap-3 md:grid-cols-2">
-              <label className="text-sm text-zinc-700">ISIN *
-                <input value={form.isin} onChange={(event) => setForm((c) => ({ ...c, isin: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
-              </label>
-              <label className="text-sm text-zinc-700">Fondsname *
-                <input value={form.fund_name} onChange={(event) => setForm((c) => ({ ...c, fund_name: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
-              </label>
-              <label className="text-sm text-zinc-700">Fondsart
-                <input value={form.fund_type} onChange={(event) => setForm((c) => ({ ...c, fund_type: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
-              </label>
-              <label className="text-sm text-zinc-700">Währung *
-                <input value={form.currency} onChange={(event) => setForm((c) => ({ ...c, currency: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2 uppercase" />
-              </label>
+                  <label className="text-sm text-zinc-700">ISIN *
+                    <input value={form.isin} onChange={(event) => setForm((c) => ({ ...c, isin: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+                  </label>
+                  <label className="text-sm text-zinc-700">Fondsname *
+                    <input value={form.fund_name} onChange={(event) => setForm((c) => ({ ...c, fund_name: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+                  </label>
+                  <label className="text-sm text-zinc-700">Produktart
+                    <input value={form.product_type} onChange={(event) => setForm((c) => ({ ...c, product_type: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" placeholder="ETF, Fonds, …" />
+                  </label>
+                  <label className="text-sm text-zinc-700">Steuerliche Fondsart *
+                    <select
+                      value={form.tax_fund_type}
+                      onChange={(event) => setForm((c) => ({ ...c, tax_fund_type: event.target.value }))}
+                      className="mt-1 w-full rounded border border-zinc-300 px-3 py-2"
+                    >
+                      {TAX_FUND_TYPE_SELECT.map((o) => (
+                        <option key={o.key} value={o.key}>{o.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-sm text-zinc-700">Währung *
+                    <input value={form.currency} onChange={(event) => setForm((c) => ({ ...c, currency: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2 uppercase" />
+                  </label>
                 </div>
               </div>
               <div>
                 <h4 className="text-sm font-semibold text-zinc-900">Bestandsdaten</h4>
                 <div className="mt-2 grid gap-3 md:grid-cols-2">
-              <label className="text-sm text-zinc-700">Anteile 01.01. *
-                <input value={form.units_start} onChange={(event) => setForm((c) => ({ ...c, units_start: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
-              </label>
-              <label className="text-sm text-zinc-700">Anteile 31.12. *
-                <input value={form.units_end} onChange={(event) => setForm((c) => ({ ...c, units_end: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
-              </label>
-              <label className="text-sm text-zinc-700">Ausschüttungen
-                <input value={form.distributions} onChange={(event) => setForm((c) => ({ ...c, distributions: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
-              </label>
-              <label className="text-sm text-zinc-700">Kaufdatum (optional)
-                <input type="date" value={form.purchase_date} onChange={(event) => setForm((c) => ({ ...c, purchase_date: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
-              </label>
+                  <label className="text-sm text-zinc-700">Anteile 01.01.
+                    <input value={form.units_start} onChange={(event) => setForm((c) => ({ ...c, units_start: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+                  </label>
+                  <label className="text-sm text-zinc-700">Anteile 31.12. *
+                    <input value={form.units_end} onChange={(event) => setForm((c) => ({ ...c, units_end: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+                  </label>
+                  <label className="text-sm text-zinc-700">Ausschüttungen
+                    <input value={form.distributions} onChange={(event) => setForm((c) => ({ ...c, distributions: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+                  </label>
+                  <label className="text-sm text-zinc-700">Kaufdatum (optional)
+                    <input type="date" value={form.purchase_date} onChange={(event) => setForm((c) => ({ ...c, purchase_date: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+                  </label>
                 </div>
               </div>
               <div>
                 <h4 className="text-sm font-semibold text-zinc-900">Kursdaten</h4>
                 <div className="mt-2 grid gap-3 md:grid-cols-2">
-              <label className="text-sm text-zinc-700">Kurs 01.01.
-                <input value={form.price_start} onChange={(event) => setForm((c) => ({ ...c, price_start: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
-              </label>
-              <label className="text-sm text-zinc-700">Kurs 31.12. *
-                <input value={form.price_end} onChange={(event) => setForm((c) => ({ ...c, price_end: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
-              </label>
+                  <label className="text-sm text-zinc-700">NAV / Kurs 01.01. *
+                    <input value={form.price_start} onChange={(event) => setForm((c) => ({ ...c, price_start: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+                  </label>
+                  <label className="text-sm text-zinc-700">NAV / Kurs 31.12. *
+                    <input value={form.price_end} onChange={(event) => setForm((c) => ({ ...c, price_end: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+                  </label>
                 </div>
               </div>
             </div>

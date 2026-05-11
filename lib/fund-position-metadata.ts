@@ -1,56 +1,38 @@
-import {
-  getTeilfreistellungssatz,
-  type FondsPosition,
-} from "@/lib/calculate-vorabpauschale";
+import type { FondsPosition } from "@/lib/calculate-vorabpauschale";
+import { resolvePartialExemptionRate } from "@/lib/validate-fund-position";
 
-export const FUND_ART_SELECT = [
+/** Steuerliche Fondskategorie (DB-Wert snake_case). */
+export const TAX_FUND_TYPE_SELECT = [
   { key: "aktien" as const, label: "Aktienfonds" },
   { key: "misch" as const, label: "Mischfonds" },
-  { key: "immobilien" as const, label: "Immobilienfonds" },
-  { key: "sonstige" as const, label: "Sonstiges" },
+  { key: "immobilien" as const, label: "Immobilienfonds (Inland)" },
+  { key: "immobilien_ausland" as const, label: "Immobilienfonds (Ausland)" },
+  { key: "sonstige" as const, label: "Sonstige / keine Teilfreistellung" },
 ] as const;
 
-export type FundArtKey = (typeof FUND_ART_SELECT)[number]["key"];
+export type TaxFundTypeKey = (typeof TAX_FUND_TYPE_SELECT)[number]["key"];
 
-export function parseFundArtKey(raw: string | null | undefined): FundArtKey {
-  const n = (raw ?? "").toLowerCase();
-  if (n.includes("aktien")) return "aktien";
-  if (n.includes("misch")) return "misch";
-  if (n.includes("immobilien")) return "immobilien";
-  return "sonstige";
+export function parseTaxFundTypeKey(raw: string | null | undefined): TaxFundTypeKey | null {
+  const n = (raw ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+  if (!n) return null;
+  const hit = TAX_FUND_TYPE_SELECT.find((o) => o.key === n);
+  return hit?.key ?? null;
 }
 
-export function fundArtKeyToCalcFondsart(key: FundArtKey): FondsPosition["fondsart"] {
-  if (key === "aktien") return "aktien";
-  if (key === "misch") return "misch";
-  if (key === "immobilien") return "immobilien";
-  return "sonstige";
+export function taxFundTypeKeyToFondsart(key: TaxFundTypeKey): FondsPosition["fondsart"] {
+  return key;
 }
 
-export function fundArtKeyToDbString(key: FundArtKey): string {
-  return FUND_ART_SELECT.find((o) => o.key === key)?.label ?? "Sonstiges";
-}
-
-export function teilfreistellungAnteilText(key: FundArtKey): string {
-  const f = fundArtKeyToCalcFondsart(key);
-  const v = getTeilfreistellungssatz(f);
+export function teilfreistellungAnteilTextForTaxType(
+  taxFundType: string | null | undefined,
+  partialRate: number | null | undefined,
+): string {
+  const v = resolvePartialExemptionRate(taxFundType, partialRate);
   return `${(v * 100).toLocaleString("de-DE", { maximumFractionDigits: 2 })} %`;
 }
 
-/** Teilfreistellung aus freiem DB-Text (inkl. Immobilien-Ausland anhand Stichworten). */
-export function teilfreistellungDecimalFromRaw(raw: string | null | undefined): number {
-  const n = (raw ?? "").toLowerCase();
-  if (n.includes("immobilien") && n.includes("ausland")) return getTeilfreistellungssatz("immobilien_ausland");
-  if (n.includes("aktien")) return getTeilfreistellungssatz("aktien");
-  if (n.includes("misch")) return getTeilfreistellungssatz("misch");
-  if (n.includes("immobilien")) return getTeilfreistellungssatz("immobilien");
-  return getTeilfreistellungssatz("sonstige");
-}
-
-export function teilfreistellungAnteilTextFromRaw(raw: string | null | undefined): string {
-  const v = teilfreistellungDecimalFromRaw(raw);
-  return `${(v * 100).toLocaleString("de-DE", { maximumFractionDigits: 2 })} %`;
-}
+/** Freie Produktbezeichnung (ETF, Fonds, …), nur Anzeige. */
+export const PRODUCT_TYPE_SUGGESTIONS = ["ETF", "Fonds", "ETC", "Zertifikat"] as const;
 
 export type DataOriginLabel = "Bankstatement" | "Manuell" | "API" | "—";
 
