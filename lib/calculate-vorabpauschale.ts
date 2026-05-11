@@ -441,12 +441,18 @@ function buildZeroResult(params: {
   };
 }
 
-function getKuerzungsmonate(kaufDatum?: string | Date | null): number {
+/** Kürzungsmonate ab Jahresanfang bis Vormonat des Kaufs (vgl. Spec: kaufmonat − 1). */
+export function getKuerzungsmonate(kaufDatum?: string | Date | null): number {
   if (!kaufDatum) return 0;
   const date = new Date(kaufDatum);
   if (Number.isNaN(date.getTime())) return 0;
   const kaufmonat = date.getMonth() + 1;
   return Math.max(kaufmonat - 1, 0);
+}
+
+/** Anrechenbare Monate im Steuerjahr bei unterjährigem Erwerb (12 − Kürzungsmonate). */
+export function getAnrechenbareMonate(kaufDatum?: string | Date | null): number {
+  return 12 - getKuerzungsmonate(kaufDatum);
 }
 
 function isSaleInTaxYear(position: FondsPosition): boolean {

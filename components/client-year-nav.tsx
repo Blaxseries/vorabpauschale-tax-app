@@ -9,18 +9,20 @@ type ClientYearNavProps = {
 };
 
 const yearNavItems = [
-  { label: "Übersicht", href: "" },
-  { label: "Depots", href: "/portfolios" },
-  { label: "Dokumente", href: "/documents" },
-  { label: "Prüftabelle", href: "/review-table" },
-  { label: "Berechnung", href: "/calculation" },
-  { label: "Export", href: "/export" },
-  { label: "Prüfprotokoll", href: "/audit-log" },
+  { label: "Übersicht", segment: "" },
+  { label: "Depots", segment: "portfolios" },
+  { label: "Dokumente", segment: "documents" },
+  { label: "Prüftabelle", segment: "review-table" },
+  { label: "Berechnung", segment: "calculation" },
+  { label: "Export", segment: "export" },
+  { label: "Prüfprotokoll", segment: "audit-log" },
 ] as const;
 
 export function ClientYearNav({ clientId, year }: ClientYearNavProps) {
   const pathname = usePathname();
-  const basePath = `/clients/${clientId}/years/${year}`;
+  const normalizedYear = year.trim().replace(/\//g, "");
+  // Encode nur der dynamischen Teile, damit die Routen-Segmente korrekt bleiben.
+  const basePath = `/clients/${encodeURIComponent(clientId)}/years/${encodeURIComponent(normalizedYear)}`;
 
   return (
     <nav className="mb-6 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm">
@@ -40,7 +42,7 @@ export function ClientYearNav({ clientId, year }: ClientYearNavProps) {
       </div>
       <ul className="flex flex-wrap gap-1">
         {yearNavItems.map((item) => {
-          const href = `${basePath}${item.href}`;
+          const href = item.segment ? `${basePath}/${item.segment}` : basePath;
           const isActive = pathname === href;
 
           return (

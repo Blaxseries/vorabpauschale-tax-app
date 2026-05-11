@@ -17,7 +17,7 @@ export default async function YearCalculationPage({
   return (
     <div>
       <ClientYearNav clientId={id} year={year} />
-      <CalculationSummary year={year} />
+      <CalculationSummary clientId={id} year={year} />
     </div>
   );
 }

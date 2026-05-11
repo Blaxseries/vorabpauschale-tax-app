@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { calculateFondsPosition } from "@/lib/calculate-vorabpauschale";
+import { calculateFondsPosition } from "./calculate-vorabpauschale";
 
 test("Normalfall – thesaurierender Aktienfonds, volles Jahr", () => {
   const result = calculateFondsPosition({

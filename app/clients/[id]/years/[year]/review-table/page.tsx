@@ -15,7 +15,7 @@ export default async function YearReviewTablePage({ params }: YearReviewTablePag
   return (
     <div>
       <ClientYearNav clientId={id} year={year} />
-      <ReviewTableWorkspace year={year} />
+      <ReviewTableWorkspace clientId={id} year={year} />
     </div>
   );
 }

@@ -63,12 +63,25 @@ export interface FundPosition {
   statement_upload_id: string | null;
   isin: string;
   fund_name: string;
+  fund_type?: string | null;
+  currency?: string | null;
+  purchase_date?: string | null;
   units_start: number;
   units_end: number;
   price_start: number;
   price_end: number;
+  nav_start_local?: number | null;
+  nav_end_local?: number | null;
   distributions: number;
-  review_status: "pending" | "approved" | "rejected";
+  ezb_rate?: number | null;
+  ezb_kurs?: number | null;
+  ezb_kurs_jahresanfang?: number | null;
+  ezb_kurs_jahresende?: number | null;
+  data_source?: string | null;
+  nav_data_source?: string | null;
+  ezb_data_source?: string | null;
+  advisor_note?: string | null;
+  review_status: string;
   created_at: string;
   updated_at: string;
 }

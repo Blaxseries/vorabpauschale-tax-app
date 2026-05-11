@@ -1,827 +1,637 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 
-type SourceType = "document" | "api" | "manual" | "calculated" | "unknown";
-type Confidence = "high" | "medium" | "low";
-type FieldReviewStatus = "ok" | "offen" | "warnung";
-type RowReviewStatus = "in Prüfung" | "geprüft" | "manuell korrigiert";
-type MovementSummary =
-  | "keine"
-  | "erstmals Vorjahr"
-  | "unterjähriger Kauf"
-  | "mehrere Käufe"
-  | "Verkauf"
-  | "Käufe und Verkäufe"
-  | "unklar";
+import { FundPositionDossier, type FundPositionDossierRow } from "@/components/fund-position-dossier";
+import { supabase } from "@/lib/supabase";
 
-type ReviewDetailField = {
-  key: string;
-  field: string;
-  value: string;
-  unit: string;
-  sourceType: SourceType;
-  confidence: Confidence;
-  manuallyChanged: boolean;
-  reviewStatus: FieldReviewStatus;
-};
+type ReviewStatus = "offen" | "in Prüfung" | "geprüft";
+type FundPositionRow = FundPositionDossierRow;
 
-type ReviewPosition = {
+type PortfolioRow = {
   id: string;
-  reviewStatus: RowReviewStatus;
-  fundName: string;
-  isin: string;
-  currency: string;
-  unitsStart: number | null;
-  movement: MovementSummary;
-  unitChange: number | null;
-  positionValueStart: number | null;
-  navStart: number | null;
-  fxStart: number | null;
-  valueStartEur: number | null;
-  unitsEnd: number | null;
-  positionValueEnd: number | null;
-  navEnd: number | null;
-  fxEnd: number | null;
-  valueEndEur: number | null;
-  hint: string;
-  sourceSummary: {
-    units: SourceType;
-    nav: SourceType;
-    fx: SourceType;
-    eur: SourceType;
-  };
-  productType: string;
-  taxFundType: string;
-  partialExemption: string;
-  distributions: string;
-  withholdingTax: string;
-  documentSource: string;
-  apiSource: string;
-  fxSource: string;
-  lastChangedAt: string;
-  details: ReviewDetailField[];
+  bank_name: string;
+  account_number: string;
 };
 
-type PortfolioReviewBlock = {
+type Block = {
   id: string;
   bank: string;
   label: string;
-  openingBasis: "Vorjahresstatement" | "API" | "abgeleitet" | "fehlt";
-  closingBasis: "Jahresstatement" | "fehlt";
-  transactionsStatus: "vorhanden" | "nicht vorhanden" | "unklar";
-  distributionsStatus: "Report vorhanden" | "nicht vorhanden" | "unklar";
-  reviewStatus: "in Prüfung" | "teilweise geprüft" | "geprüft";
-  positions: ReviewPosition[];
+  positions: FundPositionRow[];
+};
+
+type PositionForm = {
+  isin: string;
+  fund_name: string;
+  fund_type: string;
+  currency: string;
+  units_start: string;
+  units_end: string;
+  price_start: string;
+  price_end: string;
+  distributions: string;
+  purchase_date: string;
 };
 
 type ReviewTableWorkspaceProps = {
+  clientId: string;
   year: string;
 };
 
-type PositionDraft = {
-  isin: string;
-  currency: string;
-  unitsStart: string;
-  movement: MovementSummary;
-  unitsEnd: string;
-  navStart: string;
-  valueStartEur: string;
-  navEnd: string;
-  valueEndEur: string;
-  positionValueStart: string;
-  fxStart: string;
-  positionValueEnd: string;
-  fxEnd: string;
-  taxFundType: string;
-  partialExemption: string;
-  distributions: string;
+const EMPTY_FORM: PositionForm = {
+  isin: "",
+  fund_name: "",
+  fund_type: "",
+  currency: "EUR",
+  units_start: "",
+  units_end: "",
+  price_start: "",
+  price_end: "",
+  distributions: "0",
+  purchase_date: "",
 };
 
-const fieldStatusLabel: Record<FieldReviewStatus, string> = {
-  ok: "Geprüft",
-  offen: "Offen",
-  warnung: "Hinweis",
-};
+function mapReviewStatus(status: string | null): ReviewStatus {
+  const normalized = (status ?? "").toLowerCase();
+  if (normalized === "approved" || normalized === "geprüft" || normalized === "geprueft" || normalized === "gepruft")
+    return "geprüft";
+  if (normalized === "in prüfung" || normalized === "in_pruefung" || normalized === "inpruefung" || normalized === "reviewing")
+    return "in Prüfung";
+  return "offen";
+}
 
-const confidenceLabel: Record<Confidence, string> = {
-  high: "hoch",
-  medium: "mittel",
-  low: "niedrig",
-};
+function nextStatus(current: ReviewStatus): ReviewStatus {
+  if (current === "offen") return "in Prüfung";
+  if (current === "in Prüfung") return "geprüft";
+  return "offen";
+}
 
-const sourceLabel: Record<SourceType, string> = {
-  document: "Statement",
-  api: "API",
-  manual: "manuell",
-  calculated: "abgeleitet",
-  unknown: "fehlt",
-};
+function toDbReviewStatus(status: ReviewStatus): string {
+  return status;
+}
 
-const initialBlocks: PortfolioReviewBlock[] = [
-  {
-    id: "pf-ubs-2025",
-    bank: "UBS",
-    label: "DEP-9104218",
-    openingBasis: "Vorjahresstatement",
-    closingBasis: "Jahresstatement",
-    transactionsStatus: "vorhanden",
-    distributionsStatus: "nicht vorhanden",
-    reviewStatus: "in Prüfung",
-    positions: [
-      {
-        id: "pos-001",
-        reviewStatus: "in Prüfung",
-        fundName: "Global Equity Opportunities",
-        isin: "LU1234567890",
-        currency: "USD",
-        unitsStart: 180.5,
-        movement: "unterjähriger Kauf",
-        unitChange: 14.3,
-        positionValueStart: 18820.42,
-        navStart: 104.27,
-        fxStart: 0.915,
-        valueStartEur: 17240.35,
-        unitsEnd: 194.8,
-        positionValueEnd: 20110.54,
-        navEnd: null,
-        fxEnd: null,
-        valueEndEur: null,
-        hint: "NAV 31.12. fehlt; FX 31.12. fehlt",
-        sourceSummary: { units: "document", nav: "api", fx: "unknown", eur: "unknown" },
-        productType: "ETF",
-        taxFundType: "Aktienfonds",
-        partialExemption: "30 %",
-        distributions: "245,31 EUR",
-        withholdingTax: "nicht verfügbar",
-        documentSource: "UBS Jahresstatement 2025",
-        apiSource: "Morningstar NAV API",
-        fxSource: "EZB Referenzkurse",
-        lastChangedAt: "27.04.2026 16:11",
-        details: [
-          {
-            key: "1",
-            field: "Fondsname",
-            value: "Global Equity Opportunities",
-            unit: "-",
-            sourceType: "document",
-            confidence: "high",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-          {
-            key: "2",
-            field: "ISIN",
-            value: "LU1234567890",
-            unit: "-",
-            sourceType: "document",
-            confidence: "high",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-        ],
-      },
-      {
-        id: "pos-002",
-        reviewStatus: "geprüft",
-        fundName: "Euro Bonds Income",
-        isin: "IE0098765432",
-        currency: "EUR",
-        unitsStart: 320,
-        movement: "keine",
-        unitChange: 0,
-        positionValueStart: 32145.22,
-        navStart: 100.45,
-        fxStart: 1,
-        valueStartEur: 32145.22,
-        unitsEnd: 320,
-        positionValueEnd: 32780.4,
-        navEnd: 102.44,
-        fxEnd: 1,
-        valueEndEur: 32780.4,
-        hint: "",
-        sourceSummary: { units: "document", nav: "api", fx: "calculated", eur: "calculated" },
-        productType: "Fonds",
-        taxFundType: "Rentenfonds",
-        partialExemption: "0 %",
-        distributions: "112,40 EUR",
-        withholdingTax: "nicht relevant",
-        documentSource: "UBS Jahresstatement 2025",
-        apiSource: "Morningstar NAV API",
-        fxSource: "nicht relevant",
-        lastChangedAt: "26.04.2026 10:05",
-        details: [
-          {
-            key: "1",
-            field: "Fondsname",
-            value: "Euro Bonds Income",
-            unit: "-",
-            sourceType: "document",
-            confidence: "high",
-            manuallyChanged: false,
-            reviewStatus: "ok",
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "pf-db-2025",
-    bank: "Deutsche Bank",
-    label: "DEP-7781001",
-    openingBasis: "abgeleitet",
-    closingBasis: "Jahresstatement",
-    transactionsStatus: "vorhanden",
-    distributionsStatus: "Report vorhanden",
-    reviewStatus: "teilweise geprüft",
-    positions: [
-      {
-        id: "pos-003",
-        reviewStatus: "in Prüfung",
-        fundName: "MSCI World ETF",
-        isin: "IE00B4L5Y983",
-        currency: "USD",
-        unitsStart: 520.2,
-        movement: "mehrere Käufe",
-        unitChange: 20,
-        positionValueStart: 40810.43,
-        navStart: 78.45,
-        fxStart: 0.929,
-        valueStartEur: 37895.12,
-        unitsEnd: 540.2,
-        positionValueEnd: 45120.91,
-        navEnd: 83.52,
-        fxEnd: null,
-        valueEndEur: null,
-        hint: "FX 31.12. fehlt; mehrere Käufe, Tranchendaten prüfen",
-        sourceSummary: { units: "document", nav: "api", fx: "unknown", eur: "unknown" },
-        productType: "ETF",
-        taxFundType: "Aktienfonds",
-        partialExemption: "30 %",
-        distributions: "unklar",
-        withholdingTax: "nicht geprüft",
-        documentSource: "DB Transaktionsreport 2025",
-        apiSource: "Morningstar NAV API",
-        fxSource: "EZB Referenzkurse",
-        lastChangedAt: "27.04.2026 15:42",
-        details: [
-          {
-            key: "1",
-            field: "Ausschüttungen brutto",
-            value: "unklar",
-            unit: "-",
-            sourceType: "document",
-            confidence: "low",
-            manuallyChanged: false,
-            reviewStatus: "offen",
-          },
-        ],
-      },
-    ],
-  },
-];
-
-function formatNumber(value: number | null, min = 2, max = 2): string {
+function formatNumber(value: number | null, minimum = 2, maximum = 2): string {
   if (value === null) return "—";
-  return value.toLocaleString("de-DE", { minimumFractionDigits: min, maximumFractionDigits: max });
-}
-
-function formatAmount(value: number | null): string {
-  return formatNumber(value, 2, 2);
-}
-
-function formatNav(value: number | null): string {
-  if (value === null) return "—";
-  const text = value.toString();
-  const decimals = text.includes(".") ? text.split(".")[1].length : 0;
-  const precision = Math.min(4, Math.max(2, decimals));
-  return formatNumber(value, precision, precision);
-}
-
-function formatFx(value: number | null): string {
-  return formatNumber(value, 4, 4);
+  return value.toLocaleString("de-DE", {
+    minimumFractionDigits: minimum,
+    maximumFractionDigits: maximum,
+  });
 }
 
 function formatUnits(value: number | null): string {
   if (value === null) return "—";
-  const asText = value.toString();
-  const decimals = asText.includes(".") ? asText.split(".")[1].length : 0;
+  const decimals = value.toString().includes(".") ? value.toString().split(".")[1].length : 0;
   const precision = Math.min(4, Math.max(2, decimals));
-  return value.toLocaleString("de-DE", {
-    minimumFractionDigits: precision,
-    maximumFractionDigits: precision,
-  });
+  return value.toLocaleString("de-DE", { minimumFractionDigits: precision, maximumFractionDigits: precision });
 }
 
-function isMovementAttention(value: MovementSummary): boolean {
-  return value === "mehrere Käufe" || value === "Käufe und Verkäufe" || value === "unklar";
+function getHint(position: FundPositionRow): string {
+  const issues: string[] = [];
+  if (position.price_start === null) issues.push("price_start fehlt");
+  if (position.price_end === null) issues.push("price_end fehlt");
+  if (position.units_end === null) issues.push("Anteile 31.12. fehlen");
+  return issues.join("; ");
 }
 
-function sourceForMain(value: SourceType): string {
-  if (value === "unknown") return "fehlt";
-  if (value === "document") return "Statement";
-  if (value === "api") return "API";
-  if (value === "manual") return "manuell";
-  if (value === "calculated") return "abgeleitet";
-  return "fehlt";
-}
-
-function rowStatusLabel(status: RowReviewStatus, hint: string): "geprüft" | "in Prüfung" | "offen" | "kritisch" {
-  if (hint.includes("fehlt")) return "kritisch";
-  if (status === "geprüft") return "geprüft";
-  if (status === "manuell korrigiert") return "offen";
+function getDepotReviewStatus(
+  positions: FundPositionRow[],
+): "geprüft" | "teilweise geprüft" | "in Prüfung" {
+  if (positions.length === 0) return "in Prüfung";
+  const reviewedCount = positions.filter(
+    (item) => mapReviewStatus(item.review_status) === "geprüft",
+  ).length;
+  if (reviewedCount === positions.length) return "geprüft";
+  if (reviewedCount > 0) return "teilweise geprüft";
   return "in Prüfung";
 }
 
-function toDraft(position: ReviewPosition): PositionDraft {
-  return {
-    isin: position.isin,
-    currency: position.currency,
-    unitsStart: position.unitsStart?.toString() ?? "",
-    movement: position.movement,
-    unitsEnd: position.unitsEnd?.toString() ?? "",
-    navStart: position.navStart?.toString() ?? "",
-    valueStartEur: position.valueStartEur?.toString() ?? "",
-    navEnd: position.navEnd?.toString() ?? "",
-    valueEndEur: position.valueEndEur?.toString() ?? "",
-    positionValueStart: position.positionValueStart?.toString() ?? "",
-    fxStart: position.fxStart?.toString() ?? "",
-    positionValueEnd: position.positionValueEnd?.toString() ?? "",
-    fxEnd: position.fxEnd?.toString() ?? "",
-    taxFundType: position.taxFundType,
-    partialExemption: position.partialExemption,
-    distributions: position.distributions,
-  };
-}
-
-function parseNullableNumber(input: string): number | null {
+function toNullableNumber(input: string): number | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
-  const normalized = trimmed.replace(/\./g, "").replace(",", ".");
-  const parsed = Number(normalized);
+  const parsed = Number(trimmed.replace(/\./g, "").replace(",", "."));
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function ReviewTableWorkspace({ year }: ReviewTableWorkspaceProps) {
-  const [blocks, setBlocks] = useState<PortfolioReviewBlock[]>(initialBlocks);
+export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspaceProps) {
+  const [blocks, setBlocks] = useState<Block[]>([]);
+  const [taxYearId, setTaxYearId] = useState<string | null>(null);
+  const [collapsedBlockIds, setCollapsedBlockIds] = useState<string[]>([]);
   const [expandedPositionIds, setExpandedPositionIds] = useState<string[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  const [collapsedBlockIds, setCollapsedBlockIds] = useState<string[]>([]);
-  const [editingPositionId, setEditingPositionId] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, PositionDraft>>({});
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [modalMode, setModalMode] = useState<"add" | null>(null);
+  const [modalPortfolioId, setModalPortfolioId] = useState<string | null>(null);
+  const [dossierEditId, setDossierEditId] = useState<string | null>(null);
+  const [form, setForm] = useState<PositionForm>(EMPTY_FORM);
+
+  async function loadData() {
+    setIsLoading(true);
+    setErrorMessage(null);
+
+    const { data: taxYear, error: taxYearError } = await supabase
+      .from("tax_years")
+      .select("id")
+      .eq("client_id", clientId)
+      .eq("year", Number(year))
+      .maybeSingle<{ id: string }>();
+
+    if (taxYearError || !taxYear) {
+      setErrorMessage("Steuerjahr konnte nicht geladen werden.");
+      setIsLoading(false);
+      return;
+    }
+    setTaxYearId(taxYear.id);
+
+    const { data: portfolios, error: portfoliosError } = await supabase
+      .from("portfolios")
+      .select("id, bank_name, account_number")
+      .eq("tax_year_id", taxYear.id)
+      .returns<PortfolioRow[]>();
+
+    if (portfoliosError) {
+      setErrorMessage("Depots konnten nicht geladen werden.");
+      setIsLoading(false);
+      return;
+    }
+
+    const portfolioIds = portfolios.map((item) => item.id);
+    const { data: fundPositions, error: fundPositionsError } = await supabase
+      .from("fund_positions")
+      .select("*")
+      .in("portfolio_id", portfolioIds)
+      .returns<FundPositionRow[]>();
+
+    if (fundPositionsError) {
+      setErrorMessage(
+        `Fondspositionen konnten nicht geladen werden${fundPositionsError.message ? ` (${fundPositionsError.message})` : ""}.`,
+      );
+      setIsLoading(false);
+      return;
+    }
+
+    const nextBlocks: Block[] = portfolios.map((portfolio) => ({
+      id: portfolio.id,
+      bank: portfolio.bank_name,
+      label: portfolio.account_number,
+      positions: fundPositions.filter((position) => position.portfolio_id === portfolio.id),
+    }));
+
+    setBlocks(nextBlocks);
+    setIsLoading(false);
+  }
+
+  useEffect(() => {
+    void loadData();
+  }, [clientId, year]);
 
   const summary = useMemo(() => {
-    const allPositions = blocks.flatMap((block) => block.positions);
-    const openCount = allPositions.filter((position) => position.hint.trim().length > 0).length;
+    const positions = blocks.flatMap((block) => block.positions);
     return {
       depotCount: blocks.length,
-      positionCount: allPositions.length,
-      reviewed: allPositions.filter((position) => position.reviewStatus === "geprüft").length,
-      open: openCount,
+      positionCount: positions.length,
+      reviewed: positions.filter((p) => mapReviewStatus(p.review_status) === "geprüft").length,
+      open: positions.filter((p) => getHint(p).length > 0).length,
     };
   }, [blocks]);
 
-  function toggleExpanded(positionId: string) {
-    setExpandedPositionIds((current) =>
-      current.includes(positionId)
-        ? current.filter((id) => id !== positionId)
-        : [...current, positionId],
-    );
-  }
-
-  function updateRowStatus(positionId: string, status: RowReviewStatus) {
-    setBlocks((current) =>
-      current.map((block) => ({
-        ...block,
-        positions: block.positions.map((position) =>
-          position.id === positionId ? { ...position, reviewStatus: status } : position,
-        ),
-      })),
-    );
-  }
-
-  function markManualCorrection(positionId: string) {
-    setBlocks((current) =>
-      current.map((block) => ({
-        ...block,
-        positions: block.positions.map((position) =>
-          position.id === positionId
-            ? {
-                ...position,
-                reviewStatus: "manuell korrigiert",
-                hint: "manuell zu prüfen",
-                details: position.details.map((field, index) =>
-                  index === 0 ? { ...field, manuallyChanged: true, sourceType: "manual" } : field,
-                ),
-              }
-            : position,
-        ),
-      })),
-    );
-  }
-
-  function startEditing(position: ReviewPosition) {
-    setEditingPositionId(position.id);
-    setDrafts((current) => ({
-      ...current,
-      [position.id]: current[position.id] ?? toDraft(position),
-    }));
-  }
-
-  function cancelEditing() {
-    setEditingPositionId(null);
-  }
-
-  function updateDraft(
-    positionId: string,
-    key: keyof PositionDraft,
-    value: PositionDraft[keyof PositionDraft],
-  ) {
-    setDrafts((current) => ({
-      ...current,
-      [positionId]: {
-        ...(current[positionId] ?? ({} as PositionDraft)),
-        [key]: value,
-      },
-    }));
-  }
-
-  function saveDraft(positionId: string) {
-    const draft = drafts[positionId];
-    if (!draft) return;
-
-    setBlocks((current) =>
-      current.map((block) => ({
-        ...block,
-        positions: block.positions.map((position) => {
-          if (position.id !== positionId) return position;
-          return {
-            ...position,
-            isin: draft.isin.trim(),
-            currency: draft.currency.trim().toUpperCase(),
-            unitsStart: parseNullableNumber(draft.unitsStart),
-            movement: draft.movement,
-            unitsEnd: parseNullableNumber(draft.unitsEnd),
-            navStart: parseNullableNumber(draft.navStart),
-            valueStartEur: parseNullableNumber(draft.valueStartEur),
-            navEnd: parseNullableNumber(draft.navEnd),
-            valueEndEur: parseNullableNumber(draft.valueEndEur),
-            positionValueStart: parseNullableNumber(draft.positionValueStart),
-            fxStart: parseNullableNumber(draft.fxStart),
-            positionValueEnd: parseNullableNumber(draft.positionValueEnd),
-            fxEnd: parseNullableNumber(draft.fxEnd),
-            taxFundType: draft.taxFundType.trim() || "Unklar",
-            partialExemption: draft.partialExemption.trim() || "unklar",
-            distributions: draft.distributions.trim() || "unklar",
-            reviewStatus: "manuell korrigiert",
-            hint: position.hint.trim().length > 0 ? position.hint : "manuell korrigiert",
-            details: position.details.map((field, index) =>
-              index === 0 ? { ...field, manuallyChanged: true, sourceType: "manual" } : field,
-            ),
-          };
-        }),
-      })),
-    );
-    setEditingPositionId(null);
-  }
-
   function toggleBlock(blockId: string) {
     setCollapsedBlockIds((current) =>
-      current.includes(blockId)
-        ? current.filter((id) => id !== blockId)
-        : [...current, blockId],
+      current.includes(blockId) ? current.filter((id) => id !== blockId) : [...current, blockId],
+    );
+  }
+
+  function toggleExpanded(positionId: string) {
+    setExpandedPositionIds((current) =>
+      current.includes(positionId) ? current.filter((id) => id !== positionId) : [...current, positionId],
+    );
+  }
+
+  async function handleCycleStatus(position: FundPositionRow) {
+    const next = nextStatus(mapReviewStatus(position.review_status));
+    const { error } = await supabase
+      .from("fund_positions")
+      .update({ review_status: toDbReviewStatus(next), reviewed_at: new Date().toISOString() })
+      .eq("id", position.id);
+    if (error) {
+      setErrorMessage(`Status konnte nicht aktualisiert werden: ${error.message}`);
+      return;
+    }
+    await loadData();
+  }
+
+  async function handleSetStatus(position: FundPositionRow, status: ReviewStatus) {
+    const { error } = await supabase
+      .from("fund_positions")
+      .update({ review_status: toDbReviewStatus(status), reviewed_at: new Date().toISOString() })
+      .eq("id", position.id);
+    if (error) {
+      setErrorMessage(`Status konnte nicht aktualisiert werden: ${error.message}`);
+      return;
+    }
+    await loadData();
+  }
+
+  async function handleApproveDepot(block: Block) {
+    if (block.positions.length === 0) return;
+    const ids = block.positions.map((position) => position.id);
+    const { error } = await supabase
+      .from("fund_positions")
+      .update({ review_status: "geprüft", reviewed_at: new Date().toISOString() })
+      .in("id", ids);
+    if (error) {
+      setErrorMessage(`Depotfreigabe fehlgeschlagen: ${error.message}`);
+      return;
+    }
+    await loadData();
+  }
+
+  function openAddModal(portfolioId: string) {
+    setModalMode("add");
+    setModalPortfolioId(portfolioId);
+    setForm(EMPTY_FORM);
+  }
+
+  function closeModal() {
+    if (isSaving) return;
+    setModalMode(null);
+    setModalPortfolioId(null);
+    setForm(EMPTY_FORM);
+  }
+
+  function openDossierForEdit(position: FundPositionRow) {
+    setExpandedPositionIds((current) =>
+      current.includes(position.id) ? current : [...current, position.id],
+    );
+    setDossierEditId(position.id);
+    setOpenMenuId(null);
+  }
+
+  async function saveModal() {
+    if (modalMode !== "add" || !modalPortfolioId) return;
+    setIsSaving(true);
+    setErrorMessage(null);
+
+    const cur = form.currency.trim().toUpperCase() || "EUR";
+    const ezbDefault = cur === "EUR" ? 1 : null;
+
+    const payload: Record<string, unknown> = {
+      portfolio_id: modalPortfolioId,
+      isin: form.isin.trim() || null,
+      fund_name: form.fund_name.trim() || null,
+      fund_type: form.fund_type.trim() || null,
+      currency: cur,
+      units_start: toNullableNumber(form.units_start),
+      units_end: toNullableNumber(form.units_end),
+      price_start: toNullableNumber(form.price_start),
+      price_end: toNullableNumber(form.price_end),
+      distributions: toNullableNumber(form.distributions) ?? 0,
+      purchase_date: form.purchase_date.trim() || null,
+      data_source: "manuell",
+      ezb_rate: ezbDefault,
+      reviewed_at: new Date().toISOString(),
+      reviewed_by: "manual-ui",
+    };
+
+    const { error } = await supabase.from("fund_positions").insert(payload);
+    if (error) {
+      setErrorMessage(`Fonds konnte nicht angelegt werden: ${error.message}`);
+      setIsSaving(false);
+      return;
+    }
+
+    setIsSaving(false);
+    closeModal();
+    await loadData();
+  }
+
+  async function handleDelete(position: FundPositionRow) {
+    const ok = window.confirm("Sind Sie sicher?");
+    if (!ok) return;
+    const { error } = await supabase.from("fund_positions").delete().eq("id", position.id);
+    if (error) {
+      setErrorMessage(`Position konnte nicht gelöscht werden: ${error.message}`);
+      return;
+    }
+    await loadData();
+  }
+
+  if (isLoading) {
+    return (
+      <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
+        <p className="text-sm text-zinc-600">Prüftabelle wird geladen...</p>
+      </section>
     );
   }
 
   return (
     <div className="space-y-3">
-      <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
-        <h2 className="text-2xl font-semibold text-zinc-900">Prüftabelle Steuerjahr {year}</h2>
+      <section className="rounded-xl border border-zinc-300 bg-white p-6 shadow-sm">
+        <h2 className="text-3xl font-semibold tracking-tight text-zinc-900">Prüftabelle Steuerjahr {year}</h2>
         <p className="mt-2 text-sm text-zinc-600">
-          Fachliche Gegenprüfung der extrahierten und angereicherten Depotdaten vor der
-          Berechnung.
+          Fachliche Gegenprüfung der extrahierten und angereicherten Depotdaten vor der Berechnung.
         </p>
-        <p className="mt-3 text-sm text-zinc-700">
-          Depots: {summary.depotCount} · Fondspositionen: {summary.positionCount} · Geprüft:{" "}
-          {summary.reviewed} · Offene Prüfung: {summary.open}
-        </p>
+        <div className="mt-4 flex flex-wrap items-center gap-5 text-sm text-zinc-700">
+          <p><span className="font-medium text-zinc-900">Depots</span> {summary.depotCount}</p>
+          <p><span className="font-medium text-zinc-900">Positionen</span> {summary.positionCount}</p>
+          <p><span className="font-medium text-zinc-900">Geprüft</span> {summary.reviewed}</p>
+          <p><span className="font-medium text-zinc-900">Offen</span> {summary.open}</p>
+        </div>
+        {errorMessage ? (
+          <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {errorMessage}
+          </p>
+        ) : null}
       </section>
 
       {blocks.map((block) => {
-        const openItems = block.positions.filter((position) => position.hint.trim().length > 0).length;
         const isCollapsed = collapsedBlockIds.includes(block.id);
+        const depotStatus = getDepotReviewStatus(block.positions);
+        const allReviewed = depotStatus === "geprüft";
+        const openItems = block.positions.filter((position) => getHint(position).length > 0).length;
+
         return (
           <section
             key={block.id}
             className="rounded-xl border border-zinc-300 bg-white p-4 shadow-sm"
           >
-            <div className="border-b border-zinc-200 pb-2">
+            <div className="border-b border-zinc-300 bg-zinc-100/80 px-3 py-3">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-zinc-900 tracking-tight">
-                  {block.bank} · {block.label} · Steuerjahr {year}
-                </p>
+                <p className="text-sm font-semibold tracking-tight text-zinc-900">{block.bank}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-zinc-700">Depot {block.label} · Steuerjahr {year}</p>
+                  <button
+                    type="button"
+                    onClick={() => toggleBlock(block.id)}
+                    className="inline-flex items-center rounded border border-zinc-300 bg-white p-1 text-zinc-700 hover:bg-zinc-100"
+                    aria-label={isCollapsed ? "Depot ausklappen" : "Depot einklappen"}
+                  >
+                    <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
+                      {isCollapsed ? (
+                        <path d="M7 8l3 3 3-3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                      ) : (
+                        <path d="M7 12l3-3 3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                      )}
+                    </svg>
+                  </button>
+                </div>
               </div>
-              <p className="mt-1 text-xs text-zinc-600">
-                Anfangsbestand: {block.openingBasis} · Endbestand: {block.closingBasis} ·
-                Transaktionen: {block.transactionsStatus} · Ausschüttungen:{" "}
-                {block.distributionsStatus} · Status: {block.reviewStatus} · Offene Werte: {openItems}
-              </p>
+              <div className="mt-2 flex items-center gap-2 text-xs">
+                <span
+                  className={`rounded border px-2 py-0.5 ${
+                    allReviewed
+                      ? "border-emerald-700 text-emerald-800"
+                      : depotStatus === "teilweise geprüft"
+                        ? "border-zinc-400 text-zinc-700"
+                        : "border-zinc-300 text-zinc-500"
+                  }`}
+                >
+                  {allReviewed ? "geprüft ✓" : depotStatus}
+                </span>
+                <span className="text-zinc-600">Positionen: {block.positions.length}</span>
+                <span className="text-zinc-600">Offene Werte: {openItems}</span>
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                <button type="button" className="rounded border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 hover:bg-zinc-100">Daten aktualisieren</button>
-                <button type="button" className="rounded border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 hover:bg-zinc-100">Depot prüfen</button>
-                <button type="button" className="rounded border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 hover:bg-zinc-100">Export Prüftabelle</button>
                 <button
                   type="button"
-                  onClick={() => toggleBlock(block.id)}
-                  className="inline-flex items-center gap-1 rounded border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 hover:bg-zinc-100"
+                  onClick={() => void loadData()}
+                  className="rounded border border-zinc-400 bg-white px-2 py-1 text-[11px] text-zinc-800 hover:bg-zinc-100"
                 >
-                  <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                    {isCollapsed ? (
-                      <path d="M5 12l5-5 5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                    ) : (
-                      <path d="M5 8l5 5 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                    )}
-                  </svg>
-                  {isCollapsed ? "Tabelle ausklappen" : "Tabelle einklappen"}
+                  Daten aktualisieren
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleApproveDepot(block)}
+                  className="rounded border border-zinc-400 bg-white px-2 py-1 text-[11px] text-zinc-800 hover:bg-zinc-100"
+                >
+                  Depot freigeben
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAddModal(block.id)}
+                  className="rounded border border-zinc-400 bg-white px-2 py-1 text-[11px] text-zinc-800 hover:bg-zinc-100"
+                >
+                  Fonds hinzufügen
                 </button>
               </div>
             </div>
 
             {!isCollapsed ? (
               <div className="mt-3 overflow-x-auto">
-              <table className="min-w-[1420px] divide-y divide-zinc-200 text-sm">
-                <thead className="bg-zinc-50 text-left text-zinc-600">
-                  <tr>
-                    <th
-                      colSpan={3}
-                      className="px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-zinc-700"
-                    >
-                      Fondsdaten
-                    </th>
-                    <th
-                      colSpan={3}
-                      className="border-l border-zinc-200 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-zinc-700"
-                    >
-                      Bestand
-                    </th>
-                    <th
-                      colSpan={2}
-                      className="border-l border-zinc-200 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-zinc-700"
-                    >
-                      Jahresbeginn
-                    </th>
-                    <th
-                      colSpan={2}
-                      className="border-l border-zinc-200 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-zinc-700"
-                    >
-                      Jahresende
-                    </th>
-                    <th
-                      colSpan={2}
-                      className="border-l border-zinc-200 px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-zinc-700"
-                    >
-                      Prüfung
-                    </th>
-                  </tr>
-                  <tr>
-                    <th className="sticky left-0 z-10 w-[260px] bg-zinc-50 px-3 py-2 font-medium">Fondsname</th>
-                    <th className="sticky left-[260px] z-10 w-[150px] bg-zinc-50 px-3 py-2 font-medium">ISIN</th>
-                    <th className="sticky left-[410px] z-10 w-[90px] bg-zinc-50 px-3 py-2 font-medium">Währung</th>
-                    <th className="border-l border-zinc-200 px-3 py-2 font-medium">Anteile 01.01.</th>
-                    <th className="px-3 py-2 font-medium">Bewegung im Jahr</th>
-                    <th className="px-3 py-2 font-medium">Anteile 31.12.</th>
-                    <th className="border-l border-zinc-200 px-3 py-2 font-medium">NAV 01.01.</th>
-                    <th className="px-3 py-2 font-medium">Wert 01.01. EUR</th>
-                    <th className="border-l border-zinc-200 px-3 py-2 font-medium">NAV 31.12.</th>
-                    <th className="px-3 py-2 font-medium">Wert 31.12. EUR</th>
-                    <th className="border-l border-zinc-200 px-3 py-2 font-medium">Prüfhinweis</th>
-                    <th className="px-3 py-2 font-medium">Aktion</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-zinc-200">
-                  {block.positions.map((position) => {
-                    const isExpanded = expandedPositionIds.includes(position.id);
-                    const isEditing = editingPositionId === position.id;
-                    const draft = drafts[position.id] ?? toDraft(position);
-                    return (
-                      <Fragment key={position.id}>
-                        <tr className="align-top text-zinc-700 [font-variant-numeric:tabular-nums]">
-                          <td className="sticky left-0 z-[1] w-[260px] bg-white px-3 py-2.5 font-medium text-zinc-900">
-                            <p>{position.fundName}</p>
-                            <p
-                              className={`mt-0.5 text-[11px] ${
-                                rowStatusLabel(position.reviewStatus, position.hint) === "kritisch"
-                                  ? "text-red-700"
-                                  : rowStatusLabel(position.reviewStatus, position.hint) === "offen"
-                                    ? "text-amber-700"
-                                    : "text-zinc-500"
-                              }`}
-                            >
-                              {rowStatusLabel(position.reviewStatus, position.hint)}
-                            </p>
-                          </td>
-                          <td className="sticky left-[260px] z-[1] w-[150px] bg-white px-3 py-2.5 font-mono text-[12px]">{position.isin || "—"}</td>
-                          <td className="sticky left-[410px] z-[1] w-[90px] bg-white px-3 py-2.5">{position.currency}</td>
-                          <td className="border-l border-zinc-100 px-3 py-2.5 text-right">
-                            <div>{formatUnits(position.unitsStart)}</div>
-                            <div className="text-[11px] text-zinc-500">{sourceForMain(position.sourceSummary.units)}</div>
-                          </td>
-                          <td className={`px-3 py-2.5 ${isMovementAttention(position.movement) ? "text-amber-700" : "text-zinc-700"}`}>{position.movement}</td>
-                          <td className="px-3 py-2.5 text-right">
-                            <div>{formatUnits(position.unitsEnd)}</div>
-                            <div className="text-[11px] text-zinc-500">{sourceForMain(position.sourceSummary.units)}</div>
-                          </td>
-                          <td className="border-l border-zinc-100 px-3 py-2.5 text-right">
-                            <div>{formatNav(position.navStart)}</div>
-                            <div className="text-[11px] text-zinc-500">{sourceForMain(position.sourceSummary.nav)}</div>
-                          </td>
-                          <td className="px-3 py-2.5 text-right">
-                            <div>{formatAmount(position.valueStartEur)}</div>
-                            <div className="text-[11px] text-zinc-500">{sourceForMain(position.sourceSummary.eur)}</div>
-                          </td>
-                          <td className="border-l border-zinc-100 px-3 py-2.5 text-right">
-                            <div>{formatNav(position.navEnd)}</div>
-                            <div className="text-[11px] text-zinc-500">{sourceForMain(position.sourceSummary.nav)}</div>
-                          </td>
-                          <td className="px-3 py-2.5 text-right">
-                            <div>{formatAmount(position.valueEndEur)}</div>
-                            <div className="text-[11px] text-zinc-500">{sourceForMain(position.sourceSummary.eur)}</div>
-                          </td>
-                          <td className="border-l border-zinc-100 px-3 py-2.5">
-                            {position.hint ? (
-                              <div className="group relative inline-flex items-center">
-                                <span
-                                  className={`inline-flex h-5 w-5 items-center justify-center rounded-full ${
-                                    position.hint.includes("fehlt")
-                                      ? "bg-red-100 text-red-700"
-                                      : "bg-amber-100 text-amber-700"
-                                  }`}
-                                  aria-label="Prüfhinweis vorhanden"
+                <table className="min-w-[1200px] divide-y divide-zinc-200 text-sm">
+                  <thead className="bg-zinc-50 text-left text-zinc-600">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Fondsname</th>
+                      <th className="px-3 py-2 font-medium">ISIN</th>
+                      <th className="px-3 py-2 font-medium">Währung</th>
+                      <th className="px-3 py-2 font-medium text-right">Anteile 01.01.</th>
+                      <th className="px-3 py-2 font-medium text-right">Anteile 31.12.</th>
+                      <th className="px-3 py-2 font-medium text-right">NAV 01.01.</th>
+                      <th className="px-3 py-2 font-medium text-right">NAV 31.12.</th>
+                      <th className="px-3 py-2 font-medium text-right">Ausschüttungen</th>
+                      <th className="px-3 py-2 font-medium">Prüfstatus</th>
+                      <th className="px-3 py-2 font-medium">Hinweis</th>
+                      <th className="px-3 py-2 font-medium">Aktion</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-200">
+                    {block.positions.map((position, index) => {
+                      const status = mapReviewStatus(position.review_status);
+                      const hint = getHint(position);
+                      const isExpanded = expandedPositionIds.includes(position.id);
+                      return (
+                        <Fragment key={position.id}>
+                          <tr className={`align-top text-zinc-700 [font-variant-numeric:tabular-nums] ${index % 2 === 1 ? "bg-zinc-50/50" : "bg-white"}`}>
+                            <td className="px-3 py-2.5 font-medium text-zinc-900">{position.fund_name ?? "—"}</td>
+                            <td className="px-3 py-2.5">{position.isin ?? "—"}</td>
+                            <td className="px-3 py-2.5">{position.currency ?? "EUR"}</td>
+                            <td className="px-3 py-2.5 text-right">{formatUnits(position.units_start)}</td>
+                            <td className="px-3 py-2.5 text-right">
+                              {position.units_end === null ? <span title="Pflichtfeld fehlt">⚠</span> : null} {formatUnits(position.units_end)}
+                            </td>
+                            <td className="px-3 py-2.5 text-right">
+                              {position.price_start === null ? <span title="Pflichtfeld fehlt">⚠</span> : null} {formatNumber(position.price_start)}
+                            </td>
+                            <td className="px-3 py-2.5 text-right">
+                              {position.price_end === null ? <span title="Pflichtfeld fehlt">⚠</span> : null} {formatNumber(position.price_end)}
+                            </td>
+                            <td className="px-3 py-2.5 text-right">{formatNumber(position.distributions)}</td>
+                            <td className="px-3 py-2.5">
+                              <select
+                                value={status}
+                                onChange={(event) => void handleSetStatus(position, event.target.value as ReviewStatus)}
+                                className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700"
+                              >
+                                <option value="offen">offen</option>
+                                <option value="in Prüfung">in Prüfung</option>
+                                <option value="geprüft">geprüft</option>
+                              </select>
+                            </td>
+                            <td className="px-3 py-2.5">
+                              {hint ? (
+                                <span className="text-xs text-zinc-700">⚠ {hint}</span>
+                              ) : (
+                                <span className="text-xs text-zinc-500">—</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <div className="relative flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const wasExpanded = expandedPositionIds.includes(position.id);
+                                    toggleExpanded(position.id);
+                                    if (wasExpanded) {
+                                      setDossierEditId((current) =>
+                                        current === position.id ? null : current,
+                                      );
+                                    }
+                                  }}
+                                  className="rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
                                 >
-                                  <svg
-                                    viewBox="0 0 20 20"
-                                    className="h-3.5 w-3.5"
-                                    fill="none"
-                                    aria-hidden="true"
-                                  >
-                                    <path
-                                      d="M10 3l7 13H3l7-13z"
-                                      stroke="currentColor"
-                                      strokeWidth="1.6"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                    <path
-                                      d="M10 7v4"
-                                      stroke="currentColor"
-                                      strokeWidth="1.6"
-                                      strokeLinecap="round"
-                                    />
-                                    <circle cx="10" cy="13.5" r="0.8" fill="currentColor" />
-                                  </svg>
-                                </span>
-                                <div className="pointer-events-none absolute left-7 top-1/2 z-20 hidden w-72 -translate-y-1/2 rounded-md border border-zinc-300 bg-white px-3 py-2 text-xs text-zinc-700 shadow-md group-hover:block">
-                                  {position.hint}
-                                </div>
-                              </div>
-                            ) : (
-                              <span className="text-xs text-zinc-500">—</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2.5">
-                            <div className="relative flex flex-nowrap items-center gap-1">
-                              <button type="button" onClick={() => toggleExpanded(position.id)} className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100">
-                                <span className="inline-flex items-center gap-1">
-                                  <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                                    <path
-                                      d="M3 10s2.8-4 7-4 7 4 7 4-2.8 4-7 4-7-4-7-4z"
-                                      stroke="currentColor"
-                                      strokeWidth="1.6"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                    <circle cx="10" cy="10" r="1.8" stroke="currentColor" strokeWidth="1.6" />
-                                  </svg>
-                                  Details
-                                </span>
-                              </button>
-                              <button type="button" onClick={() => setOpenMenuId((current) => (current === position.id ? null : position.id))} className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100">
-                                ⋯
-                              </button>
-                              {openMenuId === position.id ? (
-                                <div className="absolute right-0 top-7 z-10 rounded-md border border-zinc-200 bg-white p-1 shadow-md">
-                                  <button type="button" onClick={() => { startEditing(position); setOpenMenuId(null); }} className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100">Wert korrigieren</button>
-                                  <button type="button" onClick={() => { updateRowStatus(position.id, "geprüft"); setOpenMenuId(null); }} className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100">als geprüft markieren</button>
-                                  <button type="button" onClick={() => { updateRowStatus(position.id, "in Prüfung"); setOpenMenuId(null); }} className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100">Prüfung zurücknehmen</button>
-                                  <button type="button" onClick={() => setOpenMenuId(null)} className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100">Quelle anzeigen</button>
-                                </div>
-                              ) : null}
-                            </div>
-                          </td>
-                        </tr>
-                        {isExpanded ? (
-                          <tr className="bg-zinc-50/70">
-                            <td colSpan={12} className="px-4 py-2.5">
-                              {isEditing ? (
-                                <div className="mb-2 rounded-md border border-zinc-200 bg-zinc-50 p-3">
-                                  <p className="mb-2 text-xs font-medium text-zinc-700">
-                                    Erfassungsmodus (manuelle Korrektur)
-                                  </p>
-                                  <div className="grid gap-2 md:grid-cols-4">
-                                    <label className="text-xs text-zinc-700">ISIN<input value={draft.isin} onChange={(event) => updateDraft(position.id, "isin", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Währung<input value={draft.currency} onChange={(event) => updateDraft(position.id, "currency", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs uppercase" /></label>
-                                    <label className="text-xs text-zinc-700">Anteile 01.01.<input value={draft.unitsStart} onChange={(event) => updateDraft(position.id, "unitsStart", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Anteile 31.12.<input value={draft.unitsEnd} onChange={(event) => updateDraft(position.id, "unitsEnd", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Bewegung im Jahr
-                                      <select value={draft.movement} onChange={(event) => updateDraft(position.id, "movement", event.target.value as MovementSummary)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs">
-                                        <option value="keine">keine</option>
-                                        <option value="erstmals Vorjahr">erstmals Vorjahr</option>
-                                        <option value="unterjähriger Kauf">unterjähriger Kauf</option>
-                                        <option value="mehrere Käufe">mehrere Käufe</option>
-                                        <option value="Verkauf">Verkauf</option>
-                                        <option value="Käufe und Verkäufe">Käufe und Verkäufe</option>
-                                        <option value="unklar">unklar</option>
-                                      </select>
-                                    </label>
-                                    <label className="text-xs text-zinc-700">NAV 01.01.<input value={draft.navStart} onChange={(event) => updateDraft(position.id, "navStart", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">NAV 31.12.<input value={draft.navEnd} onChange={(event) => updateDraft(position.id, "navEnd", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Wert 01.01. EUR<input value={draft.valueStartEur} onChange={(event) => updateDraft(position.id, "valueStartEur", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Wert 31.12. EUR<input value={draft.valueEndEur} onChange={(event) => updateDraft(position.id, "valueEndEur", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Wert 01.01. FW<input value={draft.positionValueStart} onChange={(event) => updateDraft(position.id, "positionValueStart", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Wert 31.12. FW<input value={draft.positionValueEnd} onChange={(event) => updateDraft(position.id, "positionValueEnd", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">FX 01.01.<input value={draft.fxStart} onChange={(event) => updateDraft(position.id, "fxStart", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">FX 31.12.<input value={draft.fxEnd} onChange={(event) => updateDraft(position.id, "fxEnd", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Steuerliche Fondsart<input value={draft.taxFundType} onChange={(event) => updateDraft(position.id, "taxFundType", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Teilfreistellung<input value={draft.partialExemption} onChange={(event) => updateDraft(position.id, "partialExemption", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
-                                    <label className="text-xs text-zinc-700">Ausschüttungen<input value={draft.distributions} onChange={(event) => updateDraft(position.id, "distributions", event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs" /></label>
+                                  Akte
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setOpenMenuId((current) =>
+                                      current === position.id ? null : position.id,
+                                    )
+                                  }
+                                  className="rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100"
+                                >
+                                  ⋯
+                                </button>
+                                {openMenuId === position.id ? (
+                                  <div className="absolute right-0 top-7 z-10 rounded-md border border-zinc-200 bg-white p-1 shadow-md">
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleCycleStatus(position)}
+                                      className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100"
+                                    >
+                                      Status wechseln
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => openDossierForEdit(position)}
+                                      className="block w-full rounded px-2 py-1 text-left text-xs text-zinc-700 hover:bg-zinc-100"
+                                    >
+                                      Bearbeiten
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleDelete(position)}
+                                      className="block w-full rounded px-2 py-1 text-left text-xs text-red-700 hover:bg-red-50"
+                                    >
+                                      Löschen
+                                    </button>
                                   </div>
-                                  <div className="mt-2 flex items-center gap-2">
-                                    <button type="button" onClick={() => saveDraft(position.id)} className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100">Speichern</button>
-                                    <button type="button" onClick={cancelEditing} className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100">Abbrechen</button>
-                                  </div>
-                                </div>
-                              ) : null}
-                              <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white">
-                                <table className="min-w-full divide-y divide-zinc-200 text-xs">
-                                  <thead className="bg-zinc-50 text-left text-zinc-600">
-                                    <tr>
-                                      <th className="px-3 py-2 font-medium">Feld</th>
-                                      <th className="px-3 py-2 font-medium">Wert</th>
-                                      <th className="px-3 py-2 font-medium">Währung/Einheit</th>
-                                      <th className="px-3 py-2 font-medium">Quelle</th>
-                                      <th className="px-3 py-2 font-medium">Sicherheit</th>
-                                      <th className="px-3 py-2 font-medium">Manuell geändert</th>
-                                      <th className="px-3 py-2 font-medium">Prüfstatus</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-zinc-200">
-                                    {position.details.map((detail) => (
-                                      <tr key={detail.key} className="text-zinc-700 [font-variant-numeric:tabular-nums]">
-                                        <td className="px-3 py-1.5">{detail.field}</td>
-                                        <td className="px-3 py-1.5">{detail.value || "fehlt"}</td>
-                                        <td className="px-3 py-1.5">{detail.unit}</td>
-                                        <td className="px-3 py-1.5">{sourceLabel[detail.sourceType]}</td>
-                                        <td className="px-3 py-1.5">{confidenceLabel[detail.confidence]}</td>
-                                        <td className="px-3 py-1.5">{detail.manuallyChanged ? "ja" : "nein"}</td>
-                                        <td className="px-3 py-1.5">{fieldStatusLabel[detail.reviewStatus]}</td>
-                                      </tr>
-                                    ))}
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Produkttyp</td><td className="px-3 py-1.5">{position.productType}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">Statement</td><td className="px-3 py-1.5">hoch</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">Geprüft</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Steuerliche Fondsart</td><td className="px-3 py-1.5">{position.taxFundType}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">abgeleitet</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">Geprüft</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Teilfreistellung</td><td className="px-3 py-1.5">{position.partialExemption}</td><td className="px-3 py-1.5">%</td><td className="px-3 py-1.5">abgeleitet</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">Geprüft</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Anteile 31.12.</td><td className="px-3 py-1.5">{formatUnits(position.unitsEnd)}</td><td className="px-3 py-1.5">Stück</td><td className="px-3 py-1.5">{sourceForMain(position.sourceSummary.units)}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Veränderung Anteile</td><td className="px-3 py-1.5">{formatUnits(position.unitChange)}</td><td className="px-3 py-1.5">Stück</td><td className="px-3 py-1.5">{sourceForMain(position.sourceSummary.units)}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Bewegung im Jahr</td><td className="px-3 py-1.5">{position.movement}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">Statement</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">NAV 01.01.</td><td className="px-3 py-1.5">{formatNav(position.navStart)}</td><td className="px-3 py-1.5">{position.currency}</td><td className="px-3 py-1.5">{sourceForMain(position.sourceSummary.nav)}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Wert 01.01. FW</td><td className="px-3 py-1.5">{formatAmount(position.positionValueStart)}</td><td className="px-3 py-1.5">{position.currency}</td><td className="px-3 py-1.5">{sourceForMain(position.sourceSummary.units)}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">FX 01.01.</td><td className="px-3 py-1.5">{formatFx(position.fxStart)}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">{position.fxStart === null ? "fehlt" : "FX/API"}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Wert 01.01. EUR</td><td className="px-3 py-1.5">{formatAmount(position.valueStartEur)}</td><td className="px-3 py-1.5">EUR</td><td className="px-3 py-1.5">{sourceForMain(position.sourceSummary.eur)}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">NAV 31.12.</td><td className="px-3 py-1.5">{formatNav(position.navEnd)}</td><td className="px-3 py-1.5">{position.currency}</td><td className="px-3 py-1.5">{sourceForMain(position.sourceSummary.nav)}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Wert 31.12. FW</td><td className="px-3 py-1.5">{formatAmount(position.positionValueEnd)}</td><td className="px-3 py-1.5">{position.currency}</td><td className="px-3 py-1.5">{sourceForMain(position.sourceSummary.units)}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">FX 31.12.</td><td className="px-3 py-1.5">{formatFx(position.fxEnd)}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">{position.fxEnd === null ? "fehlt" : "FX/API"}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Wert 31.12. EUR</td><td className="px-3 py-1.5">{formatAmount(position.valueEndEur)}</td><td className="px-3 py-1.5">EUR</td><td className="px-3 py-1.5">{sourceForMain(position.sourceSummary.eur)}</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Ausschüttungen</td><td className="px-3 py-1.5">{position.distributions}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">Statement</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Quellensteuer</td><td className="px-3 py-1.5">{position.withholdingTax}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">Statement</td><td className="px-3 py-1.5">niedrig</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Dokumentenquelle</td><td className="px-3 py-1.5">{position.documentSource}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">Statement</td><td className="px-3 py-1.5">hoch</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">Geprüft</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">API-Quelle</td><td className="px-3 py-1.5">{position.apiSource}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">API</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Wechselkursquelle</td><td className="px-3 py-1.5">{position.fxSource}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">FX/API</td><td className="px-3 py-1.5">mittel</td><td className="px-3 py-1.5">nein</td><td className="px-3 py-1.5">In Prüfung</td></tr>
-                                    <tr className="text-zinc-700 [font-variant-numeric:tabular-nums]"><td className="px-3 py-1.5">Änderungszeitpunkt</td><td className="px-3 py-1.5">{position.lastChangedAt}</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">abgeleitet</td><td className="px-3 py-1.5">hoch</td><td className="px-3 py-1.5">-</td><td className="px-3 py-1.5">Protokolliert</td></tr>
-                                  </tbody>
-                                </table>
+                                ) : null}
                               </div>
                             </td>
                           </tr>
-                        ) : null}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
+                          {isExpanded ? (
+                            <tr>
+                              <td colSpan={11} className="bg-zinc-50 px-3 py-4">
+                                <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+                                  <FundPositionDossier
+                                    key={`${position.id}-${dossierEditId === position.id ? "e" : "v"}`}
+                                    position={position}
+                                    taxYear={Number(year)}
+                                    depotBank={block.bank}
+                                    depotLabel={block.label}
+                                    startInEditMode={dossierEditId === position.id}
+                                    onSaved={() => void loadData()}
+                                    onExitEditMode={() =>
+                                      setDossierEditId((current) =>
+                                        current === position.id ? null : current,
+                                      )
+                                    }
+                                  />
+                                </div>
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
+                      );
+                    })}
+                    {block.positions.length === 0 ? (
+                      <tr>
+                        <td colSpan={11} className="px-3 py-4 text-center text-zinc-500">
+                          Keine Fondspositionen für dieses Depot vorhanden.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
               </div>
             ) : null}
           </section>
         );
       })}
+
+      {modalMode === "add" ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-3xl rounded-xl border border-zinc-300 bg-white p-5 shadow-lg">
+            <h3 className="text-lg font-semibold text-zinc-900">Fonds hinzufügen</h3>
+            <div className="mt-4 space-y-4">
+              <div>
+                <h4 className="text-sm font-semibold text-zinc-900">Fondsdaten</h4>
+                <div className="mt-2 grid gap-3 md:grid-cols-2">
+              <label className="text-sm text-zinc-700">ISIN *
+                <input value={form.isin} onChange={(event) => setForm((c) => ({ ...c, isin: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+              </label>
+              <label className="text-sm text-zinc-700">Fondsname *
+                <input value={form.fund_name} onChange={(event) => setForm((c) => ({ ...c, fund_name: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+              </label>
+              <label className="text-sm text-zinc-700">Fondsart
+                <input value={form.fund_type} onChange={(event) => setForm((c) => ({ ...c, fund_type: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+              </label>
+              <label className="text-sm text-zinc-700">Währung *
+                <input value={form.currency} onChange={(event) => setForm((c) => ({ ...c, currency: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2 uppercase" />
+              </label>
+                </div>
+              </div>
+              <div>
+                <h4 className="text-sm font-semibold text-zinc-900">Bestandsdaten</h4>
+                <div className="mt-2 grid gap-3 md:grid-cols-2">
+              <label className="text-sm text-zinc-700">Anteile 01.01. *
+                <input value={form.units_start} onChange={(event) => setForm((c) => ({ ...c, units_start: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+              </label>
+              <label className="text-sm text-zinc-700">Anteile 31.12. *
+                <input value={form.units_end} onChange={(event) => setForm((c) => ({ ...c, units_end: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+              </label>
+              <label className="text-sm text-zinc-700">Ausschüttungen
+                <input value={form.distributions} onChange={(event) => setForm((c) => ({ ...c, distributions: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+              </label>
+              <label className="text-sm text-zinc-700">Kaufdatum (optional)
+                <input type="date" value={form.purchase_date} onChange={(event) => setForm((c) => ({ ...c, purchase_date: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+              </label>
+                </div>
+              </div>
+              <div>
+                <h4 className="text-sm font-semibold text-zinc-900">Kursdaten</h4>
+                <div className="mt-2 grid gap-3 md:grid-cols-2">
+              <label className="text-sm text-zinc-700">Kurs 01.01.
+                <input value={form.price_start} onChange={(event) => setForm((c) => ({ ...c, price_start: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+              </label>
+              <label className="text-sm text-zinc-700">Kurs 31.12. *
+                <input value={form.price_end} onChange={(event) => setForm((c) => ({ ...c, price_end: event.target.value }))} className="mt-1 w-full rounded border border-zinc-300 px-3 py-2" />
+              </label>
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button type="button" onClick={closeModal} className="rounded border border-zinc-300 px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100">Abbrechen</button>
+              <button type="button" onClick={() => void saveModal()} disabled={isSaving} className="rounded bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-60">
+                {isSaving ? "Speichert..." : "Speichern"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
