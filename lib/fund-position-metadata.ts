@@ -1,6 +1,15 @@
 import type { FondsPosition } from "@/lib/calculate-vorabpauschale";
 import { resolvePartialExemptionRate } from "@/lib/validate-fund-position";
 
+/**
+ * MVP-FX-Semantik für EZB-/Kursfelder in Umrechnungspfaden (z. B. `toEurFromLocal`, Strict-Resolver):
+ * - **fx** = Fremdwährungseinheiten pro 1 EUR („1 EUR = fx …“).
+ * - **EUR-Betrag** = Nominalbetrag in Fremdwährung / fx.
+ *
+ * Die Resolver `resolveEzbStart*` / `resolveEzbEnd*` liefern Werte in dieser fx-Bedeutung, sofern die
+ * gespeicherten Rohdaten konsistent gepflegt sind.
+ */
+
 /** Steuerliche Fondskategorie (DB-Wert snake_case). */
 export const TAX_FUND_TYPE_SELECT = [
   { key: "aktien" as const, label: "Aktienfonds" },
@@ -46,6 +55,7 @@ export function formatDataOrigin(value: string | null | undefined): DataOriginLa
   return "—";
 }
 
+/** Liefert fx (Fremdwährungseinheiten pro 1 EUR) nach Priorität Jahresanfang → ezb_kurs → ezb_rate; Fallback 1. */
 export function resolveEzbStart(row: {
   ezb_kurs_jahresanfang?: number | null;
   ezb_kurs?: number | null;
@@ -60,6 +70,7 @@ export function resolveEzbStart(row: {
   return 1;
 }
 
+/** Liefert fx (Fremdwährungseinheiten pro 1 EUR) nach Priorität Jahresende → ezb_kurs → ezb_rate; Fallback 1. */
 export function resolveEzbEnd(row: {
   ezb_kurs_jahresende?: number | null;
   ezb_kurs?: number | null;
@@ -74,7 +85,7 @@ export function resolveEzbEnd(row: {
   return 1;
 }
 
-/** Wie resolveEzbEnd, aber ohne Fallback 1 (für UI, wenn kein Kurs gesetzt ist). */
+/** Wie resolveEzbEnd, aber ohne Fallback 1: fx oder `null`, wenn kein positiver Kurs gesetzt ist. */
 export function resolveEzbEndStrict(row: {
   ezb_kurs_jahresende?: number | null;
   ezb_kurs?: number | null;
@@ -89,7 +100,7 @@ export function resolveEzbEndStrict(row: {
   return null;
 }
 
-/** Wie resolveEzbStart, aber ohne Fallback 1. */
+/** Wie resolveEzbStart, aber ohne Fallback 1: fx oder `null`, wenn kein positiver Kurs gesetzt ist. */
 export function resolveEzbStartStrict(row: {
   ezb_kurs_jahresanfang?: number | null;
   ezb_kurs?: number | null;
@@ -105,22 +116,32 @@ export function resolveEzbStartStrict(row: {
 }
 
 /**
- * EZB-Kurs im Sinne von toEurFromLocal: EUR pro 1 Einheit Fremdwährung.
- * Anzeige „1 EUR = x Fremdwährung“ → x = 1 / ezbEurPerForeignUnit.
+ * Multiplikativer Kehrwert: liefert `1 / k` für `k > 0`.
+ *
+ * Exportname aus historischen Gründen. Im Dossier wird er genutzt, wenn der gespeicherte Kurs `k` zur
+ * Anzeige „1 EUR = x Fremdwährung“ in die Größe **x = fx** über **x = 1/k** überführt werden soll.
+ * Für reine EUR-Umrechnung nach MVP (`EUR = Fremdwährungsbetrag / fx`) dient {@link toEurFromLocal} mit
+ * Divisor **fx** direkt — nicht mit `1/fx` aus diesem Hilfsfunktionsergebnis verwechseln.
  */
-export function foreignUnitsPerOneEur(ezbEurPerForeignUnit: number): number | null {
-  if (!Number.isFinite(ezbEurPerForeignUnit) || ezbEurPerForeignUnit <= 0) return null;
-  return 1 / ezbEurPerForeignUnit;
+export function foreignUnitsPerOneEur(positiveRate: number): number | null {
+  if (!Number.isFinite(positiveRate) || positiveRate <= 0) return null;
+  return 1 / positiveRate;
 }
 
+/**
+ * Wandelt einen NAV- oder Betrag in Fremdwährung in EUR um.
+ * @param localAmount Betrag in Fremdwährung (bzw. EUR-Betrag, wenn Währung EUR).
+ * @param fxForeignPerOneEur Fremdwährungseinheiten pro 1 EUR („1 EUR = fx …“); bei EUR ignoriert.
+ * @returns `localAmount / fxForeignPerOneEur` für Fremdwährung, sonst `localAmount`.
+ */
 export function toEurFromLocal(
-  localNav: number | null | undefined,
+  localAmount: number | null | undefined,
   currency: string | null | undefined,
-  ezb: number | null,
+  fxForeignPerOneEur: number | null,
 ): number | null {
-  if (localNav === null || localNav === undefined || Number.isNaN(localNav)) return null;
-  if ((currency ?? "EUR").toUpperCase() === "EUR") return localNav;
-  const fx = ezb && ezb > 0 ? ezb : null;
+  if (localAmount === null || localAmount === undefined || Number.isNaN(localAmount)) return null;
+  if ((currency ?? "EUR").toUpperCase() === "EUR") return localAmount;
+  const fx = fxForeignPerOneEur && fxForeignPerOneEur > 0 ? fxForeignPerOneEur : null;
   if (!fx) return null;
-  return localNav / fx;
+  return localAmount / fx;
 }
