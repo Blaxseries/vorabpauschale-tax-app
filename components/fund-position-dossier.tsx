@@ -6,7 +6,6 @@ import { getAnrechenbareMonate } from "@/lib/calculate-vorabpauschale";
 import {
   PRODUCT_TYPE_SUGGESTIONS,
   TAX_FUND_TYPE_SELECT,
-  foreignUnitsPerOneEur,
   formatDataOrigin,
   parseTaxFundTypeKey,
   resolveEzbEndStrict,
@@ -197,25 +196,21 @@ export function FundPositionDossier({
 
   const validationList = parseValidationErrors(position.validation_errors);
 
-  function foreignPerOneEurInputFromDb(ezbEurPerForeign: number | null | undefined): string {
-    if (typeof ezbEurPerForeign !== "number" || !Number.isFinite(ezbEurPerForeign) || ezbEurPerForeign <= 0) {
-      return "";
-    }
-    const x = foreignUnitsPerOneEur(ezbEurPerForeign);
-    if (x === null) return "";
-    return String(x);
-  }
-
   const [form, setForm] = useState({
+    fundName: position.fund_name?.trim() ?? "",
+    isin: position.isin?.trim() ?? "",
     productType: position.product_type?.trim() ?? "",
     taxFundKey: parseTaxFundTypeKey(position.tax_fund_type) ?? "",
     partialExemptionOverride: "",
+    unitsStart: position.units_start?.toString() ?? "",
+    unitsEnd: position.units_end?.toString() ?? "",
     purchaseDate: (position.purchase_date ?? "").slice(0, 10),
     priceStart: position.price_start?.toString() ?? "",
     priceEnd: position.price_end?.toString() ?? "",
     distributions: position.distributions?.toString() ?? "0",
     currency: (position.currency ?? "EUR").trim().toUpperCase() || "EUR",
-    ezbJahresende: foreignPerOneEurInputFromDb(position.ezb_kurs_jahresende),
+    ezbJahresanfang: position.ezb_kurs_jahresanfang?.toString() ?? "",
+    ezbJahresende: position.ezb_kurs_jahresende?.toString() ?? "",
     advisorNote: position.advisor_note ?? "",
   });
 
@@ -225,6 +220,8 @@ export function FundPositionDossier({
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- Formular bei neuer Serverzeile zurücksetzen
     setForm({
+      fundName: position.fund_name?.trim() ?? "",
+      isin: position.isin?.trim() ?? "",
       productType: position.product_type?.trim() ?? "",
       taxFundKey: parseTaxFundTypeKey(position.tax_fund_type) ?? "",
       partialExemptionOverride:
@@ -233,12 +230,15 @@ export function FundPositionDossier({
         Number.isFinite(position.partial_exemption_rate)
           ? String(position.partial_exemption_rate)
           : "",
+      unitsStart: position.units_start?.toString() ?? "",
+      unitsEnd: position.units_end?.toString() ?? "",
       purchaseDate: (position.purchase_date ?? "").slice(0, 10),
       priceStart: position.price_start?.toString() ?? "",
       priceEnd: position.price_end?.toString() ?? "",
       distributions: position.distributions?.toString() ?? "0",
       currency: (position.currency ?? "EUR").trim().toUpperCase() || "EUR",
-      ezbJahresende: foreignPerOneEurInputFromDb(position.ezb_kurs_jahresende),
+      ezbJahresanfang: position.ezb_kurs_jahresanfang?.toString() ?? "",
+      ezbJahresende: position.ezb_kurs_jahresende?.toString() ?? "",
       advisorNote: position.advisor_note ?? "",
     });
   }, [position]);
@@ -250,36 +250,43 @@ export function FundPositionDossier({
     const cur = (form.currency.trim() || "EUR").toUpperCase();
     const eur = cur === "EUR";
 
+    const fundName = form.fundName.trim() || null;
+    const isin = form.isin.trim() || null;
+
+    const unitsStart = toNullableNumber(form.unitsStart);
+    const unitsEnd = toNullableNumber(form.unitsEnd);
+
     const priceStart = toNullableNumber(form.priceStart);
     const priceEnd = toNullableNumber(form.priceEnd);
     const dist = toNullableNumber(form.distributions) ?? 0;
     const partialOverride = toNullableNumber(form.partialExemptionOverride);
     const taxFundDb = form.taxFundKey.trim() || null;
-    const xForeignPerEur = !eur ? toNullableNumber(form.ezbJahresende) : null;
-    const ezbJe =
-      eur ? 1 : xForeignPerEur !== null && xForeignPerEur > 0 ? 1 / xForeignPerEur : null;
 
-    const ezbJahresendeVal = eur ? 1 : ezbJe;
-    const ezbJa =
-      eur
-        ? 1
-        : typeof position.ezb_kurs_jahresanfang === "number" &&
-            Number.isFinite(position.ezb_kurs_jahresanfang) &&
-            position.ezb_kurs_jahresanfang > 0
-          ? position.ezb_kurs_jahresanfang
-          : ezbJe !== null && ezbJe > 0
-            ? ezbJe
-            : null;
-    const ezbKursVal = eur ? 1 : (ezbJe !== null ? ezbJe : position.ezb_kurs);
-    const ezbRateVal = eur ? 1 : (ezbJe !== null ? ezbJe : position.ezb_rate);
+    // MVP-FX-Semantik: fx = Fremdwährungseinheiten pro 1 EUR („1 EUR = fx Fremdwährung“).
+    // Daher: keine Inversion (nicht 1 / x).
+    const fxEzbEnd = !eur ? toNullableNumber(form.ezbJahresende) : null;
+    const fxEzbStart = !eur ? toNullableNumber(form.ezbJahresanfang) : null;
+
+    const ezbJahresendeVal =
+      eur ? 1 : fxEzbEnd !== null && Number.isFinite(fxEzbEnd) && fxEzbEnd > 0 ? fxEzbEnd : null;
+    // Optional: bei leerem 01.01. speichern wir bewusst `null` und lassen späteren Fallback zu.
+    const ezbJa = eur ? 1 : fxEzbStart !== null && Number.isFinite(fxEzbStart) && fxEzbStart > 0 ? fxEzbStart : null;
+
+    // Legacy-Fallback: ezb_kurs und ezb_rate erhalten denselben Wert wie ezb_kurs_jahresende.
+    const ezbKursVal = eur ? 1 : ezbJahresendeVal;
+    const ezbRateVal = eur ? 1 : ezbJahresendeVal;
 
     const mergedForValidate: FundPositionDossierRow = {
       ...position,
       currency: cur,
+      fund_name: fundName,
+      isin,
       product_type: form.productType.trim() || null,
       tax_fund_type: taxFundDb,
       partial_exemption_rate: partialOverride,
       purchase_date: form.purchaseDate.trim() || null,
+      units_start: unitsStart,
+      units_end: unitsEnd,
       price_start: priceStart,
       price_end: priceEnd,
       distributions: dist,
@@ -296,10 +303,14 @@ export function FundPositionDossier({
       .from("fund_positions")
       .update({
         currency: cur,
+        fund_name: fundName,
+        isin,
         product_type: form.productType.trim() || null,
         tax_fund_type: taxFundDb,
         partial_exemption_rate: partialOverride,
         purchase_date: form.purchaseDate.trim() || null,
+        units_start: unitsStart,
+        units_end: unitsEnd,
         price_start: priceStart,
         price_end: priceEnd,
         distributions: dist,
@@ -325,8 +336,7 @@ export function FundPositionDossier({
   }
 
   const ezbEndForLabel = ezbEndStrict;
-  const foreignPerEur =
-    ezbEndForLabel !== null ? foreignUnitsPerOneEur(ezbEndForLabel) : null;
+  const foreignPerEur = ezbEndForLabel;
 
   return (
     <div className="space-y-4">
@@ -418,6 +428,42 @@ export function FundPositionDossier({
         <div className="rounded-lg border border-zinc-200 bg-zinc-50/80 p-4">
           <p className="text-sm font-semibold text-zinc-900">Bearbeiten</p>
           <div className="mt-3 grid gap-4 md:grid-cols-2">
+            <label className="block text-sm text-zinc-700 md:col-span-2">
+              Fondsname
+              <input
+                value={form.fundName}
+                onChange={(e) => setForm((f) => ({ ...f, fundName: e.target.value }))}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+                placeholder="z. B. Aktien Global"
+              />
+            </label>
+            <label className="block text-sm text-zinc-700">
+              ISIN
+              <input
+                value={form.isin}
+                onChange={(e) => setForm((f) => ({ ...f, isin: e.target.value }))}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-mono"
+                placeholder="z. B. LU000..."
+              />
+            </label>
+            <label className="block text-sm text-zinc-700">
+              Anteile 01.01. (optional)
+              <input
+                value={form.unitsStart}
+                onChange={(e) => setForm((f) => ({ ...f, unitsStart: e.target.value }))}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+                placeholder="z. B. 12,3456"
+              />
+            </label>
+            <label className="block text-sm text-zinc-700">
+              Fondsbestand 31.12. (Pflicht)
+              <input
+                value={form.unitsEnd}
+                onChange={(e) => setForm((f) => ({ ...f, unitsEnd: e.target.value }))}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+                placeholder="z. B. 123,45"
+              />
+            </label>
             <label className="block text-sm text-zinc-700">
               Produktart
               <input
@@ -494,7 +540,7 @@ export function FundPositionDossier({
               />
             </label>
             <label className="block text-sm text-zinc-700 md:col-span-2">
-              Ausschüttungen im Jahr (EUR)
+              Ausschüttungen im Jahr ({formCurrency})
               <input
                 value={form.distributions}
                 onChange={(e) => setForm((f) => ({ ...f, distributions: e.target.value }))}
@@ -502,19 +548,29 @@ export function FundPositionDossier({
               />
             </label>
             {!formIsEur ? (
-              <label className="block text-sm text-zinc-700 md:col-span-2">
-                EZB-Referenzkurs 31.12. (1 EUR = x Fremdwährung)
-                <input
-                  value={form.ezbJahresende}
-                  onChange={(e) => setForm((f) => ({ ...f, ezbJahresende: e.target.value }))}
-                  className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
-                  placeholder="z. B. 0,86"
-                />
-                <p className="mt-1 text-xs text-zinc-500">
-                  Wird später per API befüllt; aktuell manuell. Eingabe: Anzahl {formCurrency} für 1 EUR (entspricht
-                  der fachlichen Lesart „1 EUR = x {formCurrency}“).
-                </p>
-              </label>
+              <>
+                <label className="block text-sm text-zinc-700 md:col-span-2">
+                  EZB-Referenzkurs 01.01. (1 EUR = x Fremdwährung)
+                  <input
+                    value={form.ezbJahresanfang}
+                    onChange={(e) => setForm((f) => ({ ...f, ezbJahresanfang: e.target.value }))}
+                    className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+                    placeholder="optional (z. B. 1,08)"
+                  />
+                </label>
+                <label className="block text-sm text-zinc-700 md:col-span-2">
+                  EZB-Referenzkurs 31.12. (1 EUR = x Fremdwährung)
+                  <input
+                    value={form.ezbJahresende}
+                    onChange={(e) => setForm((f) => ({ ...f, ezbJahresende: e.target.value }))}
+                    className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+                    placeholder="z. B. 0,86"
+                  />
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Eingabe: Anzahl {formCurrency} für 1 EUR (entspricht der fachlichen Lesart „1 EUR = x {formCurrency}“).
+                  </p>
+                </label>
+              </>
             ) : null}
             <label className="block text-sm text-zinc-700 md:col-span-2">
               Hinweis / Notiz für den Steuerberater
@@ -559,7 +615,7 @@ export function FundPositionDossier({
         />
         <DRow
           label="Ausschüttungen im Jahr"
-          value={`${formatNum(position.distributions, 2, 2)} EUR`}
+          value={`${formatNum(position.distributions, 2, 2)} ${currency}`}
         />
         <DRow
           label="Kaufdatum"

@@ -1,6 +1,8 @@
 import Link from "next/link";
 
 import { ClientYearNav } from "@/components/client-year-nav";
+
+export const dynamic = "force-dynamic";
 import type { Client, TaxYear } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
 

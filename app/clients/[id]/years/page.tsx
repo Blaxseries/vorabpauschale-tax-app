@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
 
 import type { Client, TaxYear } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
@@ -19,7 +18,20 @@ export default async function ClientYearsPage({ params }: ClientYearsPageProps) 
     .maybeSingle<Pick<Client, "id" | "name">>();
 
   if (!client || clientError) {
-    notFound();
+    return (
+      <section className="rounded-xl border border-red-200 bg-red-50 p-6 shadow-sm">
+        <h2 className="text-xl font-semibold text-red-800">Mandant nicht gefunden</h2>
+        <p className="mt-2 text-sm text-red-700">
+          Der Mandant konnte für diese URL nicht geladen werden.
+        </p>
+        <Link
+          href="/clients"
+          className="mt-4 inline-block rounded-md border border-red-300 px-3 py-2 text-sm text-red-800 hover:bg-red-100"
+        >
+          Zur Mandantenliste
+        </Link>
+      </section>
+    );
   }
 
   const { data: yearsData, error: yearsError } = await supabase
@@ -29,7 +41,20 @@ export default async function ClientYearsPage({ params }: ClientYearsPageProps) 
     .returns<Array<Pick<TaxYear, "id" | "year">>>();
 
   if (yearsError) {
-    notFound();
+    return (
+      <section className="rounded-xl border border-red-200 bg-red-50 p-6 shadow-sm">
+        <h2 className="text-xl font-semibold text-red-800">Steuerjahre nicht geladen</h2>
+        <p className="mt-2 text-sm text-red-700">
+          Die Steuerjahre für {client.name} konnten nicht geladen werden.
+        </p>
+        <Link
+          href={`/clients/${id}`}
+          className="mt-4 inline-block rounded-md border border-red-300 px-3 py-2 text-sm text-red-800 hover:bg-red-100"
+        >
+          Zur Mandantenakte
+        </Link>
+      </section>
+    );
   }
 
   const years = [...yearsData].sort((a, b) => b.year - a.year);

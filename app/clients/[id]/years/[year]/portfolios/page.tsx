@@ -1,5 +1,4 @@
 import { ClientYearNav } from "@/components/client-year-nav";
-import { notFound } from "next/navigation";
 
 import { PortfoliosWorkspace } from "./portfolios-workspace";
 
@@ -12,10 +11,6 @@ type YearPortfoliosPageProps = {
 
 export default async function YearPortfoliosPage({ params }: YearPortfoliosPageProps) {
   const { id, year } = await params;
-
-  if (!id || !year) {
-    notFound();
-  }
 
   return (
     <div>

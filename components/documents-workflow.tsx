@@ -234,6 +234,11 @@ export function DocumentsWorkflow({
     setRows((current) => current.filter((row) => row.id !== id));
   }
 
+  function handleStartAiExtraction(documentId: string) {
+    // Platzhalter: hier wird später die KI-Extraktion für das Dokument gestartet.
+    void documentId;
+  }
+
   function handleRenameSave(id: string, nameDraft?: string) {
     const nextName = (nameDraft ?? fileRenameDrafts[id])?.trim();
     if (!nextName) return;
@@ -342,6 +347,28 @@ export function DocumentsWorkflow({
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleStartAiExtraction(row.id)}
+                        aria-label="KI-Auslesen starten"
+                        title="KI-Auslesen starten"
+                        className="rounded-md border border-zinc-300 p-1.5 text-violet-700 hover:bg-violet-50 hover:text-violet-900"
+                      >
+                        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
+                          <path
+                            d="M10 3.5l1.1 2.4 2.6.4-1.9 1.8.4 2.6L10 9.6 7.8 10.7l.4-2.6-1.9-1.8 2.6-.4L10 3.5z"
+                            stroke="currentColor"
+                            strokeWidth="1.4"
+                            strokeLinejoin="round"
+                          />
+                          <path
+                            d="M4.5 15.5h11M6.5 12.5h7"
+                            stroke="currentColor"
+                            strokeWidth="1.4"
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                      </button>
                       <button
                         type="button"
                         aria-label="Zur Prüftabelle"
