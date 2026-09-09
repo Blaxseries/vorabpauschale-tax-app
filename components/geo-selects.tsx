@@ -3,6 +3,7 @@
 import {
   COUNTRY_OPTIONS,
   CURRENCY_OPTIONS,
+  FEDERAL_STATE_OPTIONS,
   flagEmojiForRegion,
 } from "@/lib/geo-options";
 
@@ -74,6 +75,49 @@ export function CurrencySelect({
       {CURRENCY_OPTIONS.map((currency) => (
         <option key={currency.code} value={currency.code}>
           {flagEmojiForRegion(currency.flagRegion)} {currency.code} – {currency.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+type BundeslandSelectProps = {
+  value: string;
+  onChange: (code: string) => void;
+  id?: string;
+  required?: boolean;
+  className?: string;
+  /** Leere Option für „nicht gesetzt“ */
+  allowEmpty?: boolean;
+  emptyLabel?: string;
+};
+
+export function BundeslandSelect({
+  value,
+  onChange,
+  id,
+  required,
+  className,
+  allowEmpty = true,
+  emptyLabel = "— bitte wählen —",
+}: BundeslandSelectProps) {
+  return (
+    <select
+      id={id}
+      required={required}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className={[
+        "w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      {allowEmpty ? <option value="">{emptyLabel}</option> : null}
+      {FEDERAL_STATE_OPTIONS.map((state) => (
+        <option key={state.code} value={state.code}>
+          {state.name} ({state.code}) · {(state.churchTaxRate * 100).toFixed(0)} % KiSt
         </option>
       ))}
     </select>

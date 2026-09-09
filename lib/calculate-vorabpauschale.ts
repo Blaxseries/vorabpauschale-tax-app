@@ -124,12 +124,40 @@ const BASISZINS_BY_YEAR: Record<number, number> = {
   2026: 0.032,
 };
 
+/** Verifizierte BMF-Fundstellen; keine Einträge aus Modellwissen ergänzen. */
+const BASISZINS_FUNDSTELLE_BY_YEAR: Record<number, string> = {
+  2025: "BMF-Schreiben v. 10.01.2025, IV C 1 - S 1980/00230/009/002",
+  2026:
+    "BMF-Schreiben v. 13.01.2026, IV C 1 - S 1980/00230/012/001, BStBl 2026 I S. 155",
+};
+
+export type BasiszinsMeta = { satz: number; fundstelle: string | null };
+
 export function getBasiszins(jahr: number): number {
   const rate = BASISZINS_BY_YEAR[jahr];
   if (typeof rate !== "number") {
     throw new Error(`Unbekannter Basiszins für Jahr ${jahr}. Unterstützt: 2018-2026.`);
   }
   return rate;
+}
+
+export function getBasiszinsMeta(jahr: number): BasiszinsMeta {
+  return {
+    satz: getBasiszins(jahr),
+    fundstelle: BASISZINS_FUNDSTELLE_BY_YEAR[jahr] ?? null,
+  };
+}
+
+/** Zuflusszeitpunkt nach § 18 Abs. 3 InvStG: erster Werktag des Folgejahres. */
+export function getZuflussdatum(steuerjahr: number): Date {
+  // Ab dem 2. Januar des Folgejahres (1.1. ist Feiertag) den ersten Werktag wählen.
+  let day = 2;
+  let date = new Date(steuerjahr + 1, 0, day);
+  while (date.getDay() === 0 || date.getDay() === 6) {
+    day += 1;
+    date = new Date(steuerjahr + 1, 0, day);
+  }
+  return date;
 }
 
 export function getTeilfreistellungssatz(fondsart: string): number {

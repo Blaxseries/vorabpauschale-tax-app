@@ -19,6 +19,10 @@ export interface Client {
   salutation?: "Herr" | "Frau" | "Divers" | null;
   email?: string | null;
   phone?: string | null;
+  /** Vorbelegung Kirchensteuerpflicht */
+  church_tax_liable: boolean;
+  /** Vorbelegung Bundesland (z. B. HE, BY) */
+  federal_state: string | null;
   status: "active" | "needs_review" | "archived";
   created_at: string;
   updated_at: string;
@@ -29,6 +33,12 @@ export interface TaxYear {
   client_id: string;
   year: number;
   status: "open" | "in_progress" | "completed";
+  /** Angewandter Freistellungsauftrag (historisiert) */
+  freistellungsauftrag: number;
+  /** Angewandter Kirchensteuersatz 0.08 | 0.09 | null (historisiert) */
+  church_tax_rate: number | null;
+  /** Angewandter Solidaritätszuschlag (historisiert) */
+  solidaritaetszuschlag: boolean;
   last_calculated_at: string | null;
   created_at: string;
   updated_at: string;

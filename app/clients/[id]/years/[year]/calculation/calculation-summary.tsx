@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { SteuerjahrKontext } from "@/components/steuerjahr-kontext";
 import {
   type FondsPosition,
   type MandantErgebnis,
@@ -14,6 +15,7 @@ import {
   resolveEzbEndStrict,
 } from "@/lib/fund-position-metadata";
 import { supabase } from "@/lib/supabase";
+import { mapChurchTaxRateToKirchensteuer } from "@/lib/tax-year-options";
 import {
   resolvePartialExemptionRate,
   rowToValidationInput,
@@ -174,6 +176,11 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
   const [excludedRows, setExcludedRows] = useState<ExcludedRow[]>([]);
   const [hasEligiblePositions, setHasEligiblePositions] = useState(false);
   const [collapsedDepotIds, setCollapsedDepotIds] = useState<string[]>([]);
+  const [appliedTaxOptions, setAppliedTaxOptions] = useState<{
+    freistellungsauftrag: number;
+    kirchensteuer: "none" | "8" | "9";
+    solidaritaetszuschlag: boolean;
+  } | null>(null);
 
   const yearNum = Number(year);
 
@@ -186,17 +193,35 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
 
       const { data: taxYear, error: taxYearError } = await supabase
         .from("tax_years")
-        .select("id")
+        .select("id, freistellungsauftrag, church_tax_rate, solidaritaetszuschlag")
         .eq("client_id", clientId)
         .eq("year", yearNum)
-        .maybeSingle<{ id: string }>();
+        .maybeSingle<{
+          id: string;
+          freistellungsauftrag: number | string | null;
+          church_tax_rate: number | string | null;
+          solidaritaetszuschlag: boolean | null;
+        }>();
 
       if (!isActive) return;
       if (taxYearError || !taxYear) {
         setErrorMessage("Steuerjahr konnte für die Berechnung nicht geladen werden.");
+        setAppliedTaxOptions(null);
         setIsLoading(false);
         return;
       }
+
+      const freistellungsauftrag = Number(taxYear.freistellungsauftrag ?? 0);
+      const churchTaxRate =
+        taxYear.church_tax_rate === null || taxYear.church_tax_rate === undefined
+          ? null
+          : Number(taxYear.church_tax_rate);
+      const taxOptions = {
+        freistellungsauftrag: Number.isFinite(freistellungsauftrag) ? freistellungsauftrag : 0,
+        kirchensteuer: mapChurchTaxRateToKirchensteuer(churchTaxRate),
+        solidaritaetszuschlag: taxYear.solidaritaetszuschlag !== false,
+      };
+      setAppliedTaxOptions(taxOptions);
 
       const { data: portfolios, error: portfoliosError } = await supabase
         .from("portfolios")
@@ -325,11 +350,7 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
         return;
       }
 
-      const mandantResult = calculateMandant(depotsForCalculation, {
-        freistellungsauftrag: 0,
-        kirchensteuer: "none",
-        solidaritaetszuschlag: true,
-      });
+      const mandantResult = calculateMandant(depotsForCalculation, taxOptions);
 
       for (const depot of mandantResult.depot_ergebnisse) {
         calculatedDisplayRowsByDepot[depot.depot_id] = depot.fonds_ergebnisse.map((entry) => ({
@@ -368,10 +389,27 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
   return (
     <div className="space-y-4">
       <section className="rounded-xl border border-zinc-300 bg-white p-6 shadow-sm">
-        <h2 className="text-2xl font-semibold tracking-tight text-zinc-900">Vorabpauschale {year}</h2>
+        <h2 className="text-2xl font-semibold tracking-tight text-zinc-900">
+          Vorabpauschale Steuerjahr {year}
+        </h2>
+        <SteuerjahrKontext steuerjahr={Number(year)} />
         <p className="mt-1 text-sm text-zinc-600">
           Es werden nur Positionen mit Prüfstatus „geprüft“, gesetztem Berechnungsflag und vollständiger Validierung berücksichtigt.
         </p>
+        {appliedTaxOptions ? (
+          <p className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700">
+            Angewandte Parameter: Freistellungsauftrag{" "}
+            {appliedTaxOptions.freistellungsauftrag.toLocaleString("de-DE", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}{" "}
+            EUR · Kirchensteuer{" "}
+            {appliedTaxOptions.kirchensteuer === "none"
+              ? "keine"
+              : `${appliedTaxOptions.kirchensteuer} %`}{" "}
+            · Solidaritätszuschlag {appliedTaxOptions.solidaritaetszuschlag ? "ja" : "nein"}
+          </p>
+        ) : null}
         {isLoading ? (
           <p className="mt-4 text-sm text-zinc-600">Berechnung wird vorbereitet...</p>
         ) : errorMessage ? (
@@ -386,22 +424,26 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
             </p>
           </div>
         ) : result ? (
-          <div className="mt-4 grid gap-3 text-sm md:grid-cols-2 lg:grid-cols-5">
+          <div className="mt-4 grid gap-3 text-sm md:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Vorabpauschale</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">
+                Vorabpauschale (Bemessungsgrundlage)
+              </p>
               <p className="font-semibold text-zinc-900">{formatEur(result.summe_vorabpauschale_gesamt)} EUR</p>
             </div>
             <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">KeSt gesamt</p>
-              <p className="font-semibold text-zinc-900">{formatEur(result.kest_gesamt)} EUR</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">
+                Steuerpflichtig nach Teilfreistellung
+              </p>
+              <p className="font-semibold text-zinc-900">
+                {formatEur(result.summe_steuerpflichtig_vor_freistellung)} EUR
+              </p>
             </div>
             <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">Soli gesamt</p>
-              <p className="font-semibold text-zinc-900">{formatEur(result.soli_gesamt)} EUR</p>
-            </div>
-            <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2">
-              <p className="text-xs uppercase tracking-wide text-zinc-500">KiSt gesamt</p>
-              <p className="font-semibold text-zinc-900">{formatEur(result.kirchensteuer_gesamt)} EUR</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-500">
+                Festzusetzende Steuer (KapESt + Soli + KiSt)
+              </p>
+              <p className="font-semibold text-zinc-900">{formatEur(result.summe_steuer_gesamt)} EUR</p>
             </div>
             <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2">
               <p className="text-xs uppercase tracking-wide text-zinc-500">Positionen (berechnet)</p>
@@ -485,9 +527,13 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
                     <th className="w-[24%] px-4 py-2 font-medium">Fondsname</th>
                     <th className="w-[14%] px-4 py-2 font-medium">ISIN</th>
                     <th className="w-[14%] px-4 py-2 font-medium">Steuerliche Fondsart</th>
-                    <th className="w-[12%] px-4 py-2 text-right font-medium">Vorabpauschale</th>
+                    <th className="w-[12%] px-4 py-2 text-right font-medium">
+                      Vorabpauschale (Bemessungsgrundlage)
+                    </th>
                     <th className="w-[10%] px-4 py-2 text-right font-medium">Teilfreistellung</th>
-                    <th className="w-[26%] px-4 py-2 text-right font-medium">Steuerpflichtig (Pos., nach TF)</th>
+                    <th className="w-[26%] px-4 py-2 text-right font-medium">
+                      Steuerpflichtig nach Teilfreistellung
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200">
@@ -543,19 +589,31 @@ export function CalculationSummary({ clientId, year }: CalculationSummaryProps) 
         <section className="rounded-xl border border-zinc-900 bg-zinc-50 p-5 shadow-sm">
           <h3 className="text-base font-semibold text-zinc-900">Gesamtsumme Steuerjahr {year}</h3>
           <div className="mt-3 grid gap-2 text-sm text-zinc-800 sm:grid-cols-2 lg:grid-cols-3">
-            <p><span className="font-medium">Vorabpauschale:</span> {formatEur(result.summe_vorabpauschale_gesamt)} EUR</p>
+            <p>
+              <span className="font-medium">Vorabpauschale (Bemessungsgrundlage):</span>{" "}
+              {formatEur(result.summe_vorabpauschale_gesamt)} EUR
+            </p>
+            <p>
+              <span className="font-medium">Steuerpflichtig nach Teilfreistellung:</span>{" "}
+              {formatEur(result.summe_steuerpflichtig_vor_freistellung)} EUR
+            </p>
             <p>
               <span className="font-medium">Steuerpflichtig (nach Freistellungsauftrag):</span>{" "}
               {formatEur(result.steuerpflichtig_nach_freistellung)} EUR
             </p>
-            <p className="text-zinc-600">
-              <span className="font-medium">Summe steuerpflichtig (Pos., vor Freistellungsauftrag):</span>{" "}
-              {formatEur(result.summe_steuerpflichtig_vor_freistellung)} EUR
+            <p>
+              <span className="font-medium">Festzusetzende Steuer (KapESt + Soli + KiSt):</span>{" "}
+              {formatEur(result.summe_steuer_gesamt)} EUR
             </p>
-            <p><span className="font-medium">KeSt:</span> {formatEur(result.kest_gesamt)} EUR</p>
-            <p><span className="font-medium">Soli:</span> {formatEur(result.soli_gesamt)} EUR</p>
-            <p><span className="font-medium">KiSt:</span> {formatEur(result.kirchensteuer_gesamt)} EUR</p>
-            <p><span className="font-medium">Gesamtsteuer:</span> {formatEur(result.summe_steuer_gesamt)} EUR</p>
+            <p className="text-zinc-600">
+              <span className="font-medium">davon KapESt:</span> {formatEur(result.kest_gesamt)} EUR
+            </p>
+            <p className="text-zinc-600">
+              <span className="font-medium">davon Soli:</span> {formatEur(result.soli_gesamt)} EUR
+            </p>
+            <p className="text-zinc-600">
+              <span className="font-medium">davon KiSt:</span> {formatEur(result.kirchensteuer_gesamt)} EUR
+            </p>
           </div>
         </section>
       ) : null}

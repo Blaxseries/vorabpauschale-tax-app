@@ -372,3 +372,40 @@ export function findCountryOption(code: string): CountryOption | undefined {
 export function findCurrencyOption(code: string): CurrencyOption | undefined {
   return CURRENCY_OPTIONS.find((entry) => entry.code === code.toUpperCase());
 }
+
+export type FederalStateOption = {
+  code: string;
+  name: string;
+  /** Kirchensteuersatz als Dezimalzahl (0.08 | 0.09) */
+  churchTaxRate: 0.08 | 0.09;
+};
+
+/** 16 deutsche Bundesländer mit Kirchensteuersatz (BY/BW 8 %, übrige 9 %). */
+export const FEDERAL_STATE_OPTIONS: FederalStateOption[] = [
+  { code: "BW", name: "Baden-Württemberg", churchTaxRate: 0.08 },
+  { code: "BY", name: "Bayern", churchTaxRate: 0.08 },
+  { code: "BE", name: "Berlin", churchTaxRate: 0.09 },
+  { code: "BB", name: "Brandenburg", churchTaxRate: 0.09 },
+  { code: "HB", name: "Bremen", churchTaxRate: 0.09 },
+  { code: "HH", name: "Hamburg", churchTaxRate: 0.09 },
+  { code: "HE", name: "Hessen", churchTaxRate: 0.09 },
+  { code: "MV", name: "Mecklenburg-Vorpommern", churchTaxRate: 0.09 },
+  { code: "NI", name: "Niedersachsen", churchTaxRate: 0.09 },
+  { code: "NW", name: "Nordrhein-Westfalen", churchTaxRate: 0.09 },
+  { code: "RP", name: "Rheinland-Pfalz", churchTaxRate: 0.09 },
+  { code: "SL", name: "Saarland", churchTaxRate: 0.09 },
+  { code: "SN", name: "Sachsen", churchTaxRate: 0.09 },
+  { code: "ST", name: "Sachsen-Anhalt", churchTaxRate: 0.09 },
+  { code: "SH", name: "Schleswig-Holstein", churchTaxRate: 0.09 },
+  { code: "TH", name: "Thüringen", churchTaxRate: 0.09 },
+];
+
+export function findFederalStateOption(code: string): FederalStateOption | undefined {
+  return FEDERAL_STATE_OPTIONS.find((entry) => entry.code === code.toUpperCase());
+}
+
+/** Kirchensteuersatz aus Bundesland; ohne Treffer null. */
+export function churchTaxRateForFederalState(code: string | null | undefined): 0.08 | 0.09 | null {
+  if (!code) return null;
+  return findFederalStateOption(code)?.churchTaxRate ?? null;
+}

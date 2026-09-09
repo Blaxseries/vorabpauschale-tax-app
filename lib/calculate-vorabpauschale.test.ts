@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   calculateFondsPosition,
   calculateMandant,
+  getBasiszinsMeta,
   getKuerzungsmonate,
+  getZuflussdatum,
 } from "./calculate-vorabpauschale.ts";
 
 function basePosition(overrides: Partial<Parameters<typeof calculateFondsPosition>[0]> = {}) {
@@ -174,4 +176,37 @@ test("Fremdwährung: Kern erwartet bereits EUR (keine Umrechnung im Kern)", () =
 
   assert.equal(result.vorabpauschale, 177.1);
   assert.equal(result.kest, 0);
+});
+
+function assertDate(actual: Date, year: number, month: number, day: number) {
+  assert.equal(actual.getFullYear(), year);
+  assert.equal(actual.getMonth() + 1, month);
+  assert.equal(actual.getDate(), day);
+}
+
+test("getZuflussdatum – 2026 → 04.01.2027 (2.1. und 3.1. Wochenende)", () => {
+  assertDate(getZuflussdatum(2026), 2027, 1, 4);
+});
+
+test("getZuflussdatum – 2024 → 02.01.2025 (Werktag)", () => {
+  assertDate(getZuflussdatum(2024), 2025, 1, 2);
+});
+
+test("getZuflussdatum – 2021 → 03.01.2022 (2.1. ist Sonntag)", () => {
+  assertDate(getZuflussdatum(2021), 2022, 1, 3);
+});
+
+test("getBasiszinsMeta – 2026 mit Fundstelle", () => {
+  const meta = getBasiszinsMeta(2026);
+  assert.equal(meta.satz, 0.032);
+  assert.equal(
+    meta.fundstelle,
+    "BMF-Schreiben v. 13.01.2026, IV C 1 - S 1980/00230/012/001, BStBl 2026 I S. 155",
+  );
+});
+
+test("getBasiszinsMeta – Jahr ohne Fundstelle → null, kein Fehler", () => {
+  const meta = getBasiszinsMeta(2024);
+  assert.equal(meta.satz, 0.0229);
+  assert.equal(meta.fundstelle, null);
 });

@@ -4,14 +4,20 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 
+import { BundeslandSelect } from "@/components/geo-selects";
 import type { Client as DatabaseClient, TaxYear } from "@/lib/database.types";
+import { findFederalStateOption } from "@/lib/geo-options";
+import { resolveChurchTaxRateFromStammdaten } from "@/lib/tax-year-options";
 import { supabase } from "@/lib/supabase";
 
 type ClientDetailWorkspaceProps = {
   clientId: string;
 };
 
-type ClientRow = Pick<DatabaseClient, "id" | "name" | "tax_number" | "country">;
+type ClientRow = Pick<
+  DatabaseClient,
+  "id" | "name" | "tax_number" | "country" | "church_tax_liable" | "federal_state"
+>;
 type TaxYearRow = Pick<TaxYear, "id" | "client_id" | "year" | "status">;
 type Salutation = "Herr" | "Frau";
 type ClientMetadata = {
@@ -50,7 +56,11 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSavingStammdaten, setIsSavingStammdaten] = useState(false);
+  const [stammdatenMessage, setStammdatenMessage] = useState<string | null>(null);
   const [form, setForm] = useState<TaxYearForm>(initialTaxYearForm);
+  const [churchTaxLiable, setChurchTaxLiable] = useState(false);
+  const [federalState, setFederalState] = useState("");
   const [metadata, setMetadata] = useState<ClientMetadata>({
     address: "nicht gepflegt",
     salutation: "Herr",
@@ -69,7 +79,11 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
 
     const [{ data: clientData, error: clientError }, { data: taxYearData, error: taxYearError }] =
       await Promise.all([
-        supabase.from("clients").select("id, name, tax_number, country").eq("id", clientId).maybeSingle<ClientRow>(),
+        supabase
+          .from("clients")
+          .select("id, name, tax_number, country, church_tax_liable, federal_state")
+          .eq("id", clientId)
+          .maybeSingle<ClientRow>(),
         supabase
           .from("tax_years")
           .select("id, client_id, year, status")
@@ -91,6 +105,8 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
 
     const sortedTaxYears = [...taxYearData].sort((a, b) => b.year - a.year);
     setClient(clientData);
+    setChurchTaxLiable(Boolean(clientData.church_tax_liable));
+    setFederalState(clientData.federal_state ?? "");
     setTaxYears(sortedTaxYears);
     setIsLoading(false);
   }
@@ -117,6 +133,38 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
     }
   }, [clientId]);
 
+  async function handleSaveStammdaten(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSavingStammdaten(true);
+    setErrorMessage(null);
+    setStammdatenMessage(null);
+
+    const { error } = await supabase
+      .from("clients")
+      .update({
+        church_tax_liable: churchTaxLiable,
+        federal_state: federalState || null,
+      })
+      .eq("id", clientId);
+
+    setIsSavingStammdaten(false);
+    if (error) {
+      setErrorMessage("Stammdaten konnten nicht gespeichert werden.");
+      return;
+    }
+
+    setClient((current) =>
+      current
+        ? {
+            ...current,
+            church_tax_liable: churchTaxLiable,
+            federal_state: federalState || null,
+          }
+        : current,
+    );
+    setStammdatenMessage("Kirchensteuer-Stammdaten gespeichert.");
+  }
+
   async function handleCreateTaxYear(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const numericYear = Number(form.year);
@@ -129,10 +177,15 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
     setIsSubmitting(true);
     setErrorMessage(null);
 
+    const churchTaxRate = resolveChurchTaxRateFromStammdaten(churchTaxLiable, federalState || null);
+
     const { error } = await supabase.from("tax_years").insert({
       client_id: clientId,
       year: numericYear,
       status: form.status,
+      freistellungsauftrag: 0,
+      church_tax_rate: churchTaxRate,
+      solidaritaetszuschlag: true,
     });
 
     if (error) {
@@ -164,6 +217,10 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
       </section>
     );
   }
+
+  const federalStateLabel = federalState
+    ? findFederalStateOption(federalState)?.name ?? federalState
+    : "—";
 
   return (
     <div className="space-y-4">
@@ -198,7 +255,42 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
             <li>Adresse: {metadata.address}</li>
             <li>E-Mail: {metadata.email}</li>
             <li>Telefon: {metadata.phone}</li>
+            <li>Kirchensteuerpflichtig: {churchTaxLiable ? "ja" : "nein"}</li>
+            <li>Bundesland: {federalStateLabel}</li>
           </ul>
+
+          <form onSubmit={handleSaveStammdaten} className="mt-4 space-y-3 border-t border-zinc-200 pt-4">
+            <label className="flex items-center gap-2 text-sm text-zinc-700">
+              <input
+                type="checkbox"
+                checked={churchTaxLiable}
+                onChange={(event) => setChurchTaxLiable(event.target.checked)}
+                className="rounded border-zinc-300"
+              />
+              kirchensteuerpflichtig
+            </label>
+            <label className="block text-sm text-zinc-700">
+              Bundesland
+              <BundeslandSelect
+                id="client-federal-state"
+                value={federalState}
+                onChange={setFederalState}
+                className="mt-1"
+              />
+            </label>
+            {stammdatenMessage ? (
+              <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                {stammdatenMessage}
+              </p>
+            ) : null}
+            <button
+              type="submit"
+              disabled={isSavingStammdaten}
+              className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 hover:bg-zinc-700 disabled:opacity-70"
+            >
+              {isSavingStammdaten ? "Speichert..." : "Stammdaten speichern"}
+            </button>
+          </form>
         </article>
       </section>
 
@@ -272,6 +364,10 @@ export function ClientDetailWorkspace({ clientId }: ClientDetailWorkspaceProps) 
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-zinc-950/30 p-4">
           <section className="w-full max-w-lg rounded-xl border border-zinc-200 bg-white p-6 shadow-lg">
             <h3 className="text-lg font-semibold text-zinc-900">Steuerjahr anlegen</h3>
+            <p className="mt-1 text-xs text-zinc-500">
+              Kirchensteuer und Soli werden aus den Mandanten-Stammdaten vorbelegt und sind danach im
+              Steuerjahr unabhängig editierbar.
+            </p>
             <form onSubmit={handleCreateTaxYear} className="mt-4 grid gap-3 md:grid-cols-2">
               <label className="text-sm text-zinc-700">
                 Steuerjahr

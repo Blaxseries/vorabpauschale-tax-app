@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 
 import { FundPositionDossier, type FundPositionDossierRow } from "@/components/fund-position-dossier";
+import { SteuerjahrKontext } from "@/components/steuerjahr-kontext";
 import { TAX_FUND_TYPE_SELECT, teilfreistellungAnteilTextForTaxType } from "@/lib/fund-position-metadata";
 import { supabase } from "@/lib/supabase";
 import {
@@ -444,6 +445,7 @@ export function ReviewTableWorkspace({ clientId, year }: ReviewTableWorkspacePro
     <div className="space-y-3">
       <section className="rounded-xl border border-zinc-300 bg-white p-6 shadow-sm">
         <h2 className="text-3xl font-semibold tracking-tight text-zinc-900">Prüftabelle Steuerjahr {year}</h2>
+        <SteuerjahrKontext steuerjahr={Number(year)} />
         <p className="mt-2 text-sm text-zinc-600">
           Manuelle Kontrolle der Fondspositionen. In die Vorabpauschale fließen nur geprüfte und vollständig validierte Positionen ein.
         </p>

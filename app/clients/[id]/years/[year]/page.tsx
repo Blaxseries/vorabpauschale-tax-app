@@ -1,6 +1,8 @@
 import Link from "next/link";
 
 import { ClientYearNav } from "@/components/client-year-nav";
+import { TaxYearSteuerparameterForm } from "@/components/tax-year-steuerparameter-form";
+import { mapChurchTaxRateToKirchensteuer } from "@/lib/tax-year-options";
 
 export const dynamic = "force-dynamic";
 import type { Client, TaxYear } from "@/lib/database.types";
@@ -12,6 +14,24 @@ type ClientYearOverviewPageProps = {
     year: string;
   }>;
 };
+
+type TaxYearRow = Pick<
+  TaxYear,
+  | "id"
+  | "client_id"
+  | "year"
+  | "status"
+  | "freistellungsauftrag"
+  | "church_tax_rate"
+  | "solidaritaetszuschlag"
+>;
+
+function formatKirchensteuerLabel(rate: number | null): string {
+  const mapped = mapChurchTaxRateToKirchensteuer(rate);
+  if (mapped === "8") return "8 %";
+  if (mapped === "9") return "9 %";
+  return "keine";
+}
 
 export default async function ClientYearOverviewPage({
   params,
@@ -25,10 +45,12 @@ export default async function ClientYearOverviewPage({
     .maybeSingle<Pick<Client, "id" | "name" | "tax_number" | "country">>();
   const { data: taxYear, error: taxYearError } = await supabase
     .from("tax_years")
-    .select("id, client_id, year, status")
+    .select(
+      "id, client_id, year, status, freistellungsauftrag, church_tax_rate, solidaritaetszuschlag",
+    )
     .eq("client_id", id)
     .eq("year", numericYear)
-    .maybeSingle<Pick<TaxYear, "id" | "client_id" | "year" | "status">>();
+    .maybeSingle<TaxYearRow>();
 
   if (!client || clientError) {
     return (
@@ -61,6 +83,13 @@ export default async function ClientYearOverviewPage({
     );
   }
 
+  const freistellungsauftrag = Number(taxYear.freistellungsauftrag ?? 0);
+  const churchTaxRate =
+    taxYear.church_tax_rate === null || taxYear.church_tax_rate === undefined
+      ? null
+      : Number(taxYear.church_tax_rate);
+  const soli = taxYear.solidaritaetszuschlag !== false;
+
   return (
     <div>
       <ClientYearNav clientId={id} year={year} />
@@ -88,12 +117,22 @@ export default async function ClientYearOverviewPage({
             </Link>
           </article>
           <article className="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
-            <h3 className="text-sm font-semibold text-zinc-900">Stammdaten im Steuerjahr</h3>
+            <h3 className="text-sm font-semibold text-zinc-900">Steuerparameter (Steuerjahr)</h3>
+            <p className="mt-1 text-xs text-zinc-500">
+              Angewandte Werte für dieses Steuerjahr – unabhängig von späteren Änderungen an den
+              Mandanten-Stammdaten.
+            </p>
             <ul className="mt-2 space-y-1 text-sm text-zinc-600">
-              <li>Steuerjahr: {year}</li>
-              <li>Aktenstatus: {taxYear.status === "completed" ? "Abgeschlossen" : taxYear.status === "in_progress" ? "In Bearbeitung" : "Offen"}</li>
-              <li>Mandant-ID: {client.id}</li>
+              <li>Freistellungsauftrag: {freistellungsauftrag.toLocaleString("de-DE", { minimumFractionDigits: 2 })} EUR</li>
+              <li>Kirchensteuer: {formatKirchensteuerLabel(churchTaxRate)}</li>
+              <li>Solidaritätszuschlag: {soli ? "ja" : "nein"}</li>
             </ul>
+            <TaxYearSteuerparameterForm
+              taxYearId={taxYear.id}
+              initialFreistellungsauftrag={freistellungsauftrag}
+              initialChurchTaxRate={churchTaxRate}
+              initialSolidaritaetszuschlag={soli}
+            />
           </article>
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
