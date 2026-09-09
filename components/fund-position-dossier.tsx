@@ -189,8 +189,13 @@ export function FundPositionDossier({
         ? "—"
         : tfRaw;
 
-  const anrechenbar = getAnrechenbareMonate(position.purchase_date);
-  const unterjaehrig = Boolean(position.purchase_date);
+  const anrechenbar = getAnrechenbareMonate(position.purchase_date, taxYear);
+  const purchaseDate = position.purchase_date ? new Date(position.purchase_date) : null;
+  const unterjaehrig = Boolean(
+    purchaseDate &&
+      !Number.isNaN(purchaseDate.getTime()) &&
+      purchaseDate.getFullYear() === taxYear,
+  );
 
   const ezbQuelle = formatDataOrigin(position.ezb_data_source ?? position.data_source);
 

@@ -183,6 +183,17 @@ export function calculateFondsPosition(position: FondsPosition): FondsErgebnis {
     });
   }
 
+  if (isPurchaseAfterTaxYear(position)) {
+    return buildZeroResult({
+      position,
+      basiszins,
+      teilfreistellungssatz,
+      waehrung,
+      protokoll,
+      grund: "Erwerb nach dem Steuerjahr: keine Vorabpauschale.",
+    });
+  }
+
   if (basiszins === 0) {
     return buildZeroResult({
       position,
@@ -253,7 +264,7 @@ export function calculateFondsPosition(position: FondsPosition): FondsErgebnis {
     });
   }
 
-  const kuerzungsmonate = getKuerzungsmonate(position.kauf_datum);
+  const kuerzungsmonate = getKuerzungsmonate(position.kauf_datum, position.steuerjahr);
   const kuerzungsfaktor = round6((12 - kuerzungsmonate) / 12);
   const vorabpauschaleGekuerzt = round6(vorabpauschaleVorKuerzung * kuerzungsfaktor);
   protokoll.push({
@@ -469,18 +480,27 @@ function buildZeroResult(params: {
   };
 }
 
-/** Kürzungsmonate ab Jahresanfang bis Vormonat des Kaufs (vgl. Spec: kaufmonat − 1). */
-export function getKuerzungsmonate(kaufDatum?: string | Date | null): number {
+/**
+ * Kürzungsmonate nach § 18 Abs. 2 InvStG: nur bei Erwerb im Steuerjahr selbst
+ * (Kaufmonat − 1). Erwerb in einem anderen Jahr → 0 (ganzjährige Besitzzeit).
+ */
+export function getKuerzungsmonate(
+  kaufDatum: string | Date | null | undefined,
+  steuerjahr: number,
+): number {
   if (!kaufDatum) return 0;
   const date = new Date(kaufDatum);
   if (Number.isNaN(date.getTime())) return 0;
-  const kaufmonat = date.getMonth() + 1;
-  return Math.max(kaufmonat - 1, 0);
+  if (date.getFullYear() !== steuerjahr) return 0;
+  return date.getMonth(); // 0-basiert, entspricht Kaufmonat − 1
 }
 
 /** Anrechenbare Monate im Steuerjahr bei unterjährigem Erwerb (12 − Kürzungsmonate). */
-export function getAnrechenbareMonate(kaufDatum?: string | Date | null): number {
-  return 12 - getKuerzungsmonate(kaufDatum);
+export function getAnrechenbareMonate(
+  kaufDatum: string | Date | null | undefined,
+  steuerjahr: number,
+): number {
+  return 12 - getKuerzungsmonate(kaufDatum, steuerjahr);
 }
 
 function isSaleInTaxYear(position: FondsPosition): boolean {
@@ -488,6 +508,13 @@ function isSaleInTaxYear(position: FondsPosition): boolean {
   const date = new Date(position.verkauf_datum);
   if (Number.isNaN(date.getTime())) return false;
   return date.getFullYear() === position.steuerjahr;
+}
+
+function isPurchaseAfterTaxYear(position: FondsPosition): boolean {
+  if (!position.kauf_datum) return false;
+  const date = new Date(position.kauf_datum);
+  if (Number.isNaN(date.getTime())) return false;
+  return date.getFullYear() > position.steuerjahr;
 }
 
 function sumBy<T>(items: T[], mapper: (item: T) => number): number {

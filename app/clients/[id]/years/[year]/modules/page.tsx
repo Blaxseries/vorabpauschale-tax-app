@@ -34,6 +34,22 @@ const modules = [
     hrefSuffix: null,
     available: false,
   },
+  {
+    key: "auslaendische-dividenden",
+    title: "Ausländische Dividendenerträge",
+    status: "Noch nicht verfügbar" as const,
+    description: "Erfassung und Prüfung ausländischer Dividendenerträge – Platzhalter.",
+    hrefSuffix: null,
+    available: false,
+  },
+  {
+    key: "private-equity",
+    title: "Private-Equity-Beteiligungen",
+    status: "Noch nicht verfügbar" as const,
+    description: "Erfassung von Private-Equity-Beteiligungen – Platzhalter.",
+    hrefSuffix: null,
+    available: false,
+  },
 ] as const;
 
 export default async function YearModulesPage({ params }: YearModulesPageProps) {

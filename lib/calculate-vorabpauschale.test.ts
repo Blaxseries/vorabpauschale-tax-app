@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { calculateFondsPosition, calculateMandant } from "./calculate-vorabpauschale.ts";
+import {
+  calculateFondsPosition,
+  calculateMandant,
+  getKuerzungsmonate,
+} from "./calculate-vorabpauschale.ts";
 
 function basePosition(overrides: Partial<Parameters<typeof calculateFondsPosition>[0]> = {}) {
   return {
@@ -71,6 +75,62 @@ test("Unterjähriger Erwerb – Kürzungsfaktor", () => {
   // Gekürzter Betrag nutzt gerundeten Kürzungsfaktor (6 Nachkommastellen), nicht exakt 7/12.
   assert.ok(Math.abs(result.vorabpauschale_gekuerzt - 177.1 * result.kuerzungsfaktor) < 1e-5);
   assert.equal(result.vorabpauschale, 103.31);
+});
+
+test("Kauf im Vorjahr – keine unterjährige Kürzung", () => {
+  const ohneKauf = calculateFondsPosition(basePosition());
+  const mitVorjahreskauf = calculateFondsPosition(
+    basePosition({
+      kauf_datum: "2021-08-02",
+    }),
+  );
+
+  assert.equal(mitVorjahreskauf.kuerzungsmonate, 0);
+  assert.equal(mitVorjahreskauf.kuerzungsfaktor, 1);
+  assert.equal(mitVorjahreskauf.vorabpauschale, ohneKauf.vorabpauschale);
+  assert.equal(mitVorjahreskauf.vorabpauschale_gekuerzt, ohneKauf.vorabpauschale_gekuerzt);
+});
+
+test("Kauf im Steuerjahr Juni – kuerzungsmonate 5", () => {
+  const result = calculateFondsPosition(
+    basePosition({
+      kauf_datum: "2025-06-15",
+      steuerjahr: 2025,
+    }),
+  );
+
+  assert.equal(result.kuerzungsmonate, 5);
+});
+
+test("Kauf im Januar des Steuerjahrs – kuerzungsmonate 0", () => {
+  const result = calculateFondsPosition(
+    basePosition({
+      kauf_datum: "2025-01-10",
+    }),
+  );
+
+  assert.equal(result.kuerzungsmonate, 0);
+  assert.equal(result.kuerzungsfaktor, 1);
+});
+
+test("Kauf nach dem Steuerjahr – Nullfall", () => {
+  const result = calculateFondsPosition(
+    basePosition({
+      kauf_datum: "2026-01-10",
+      steuerjahr: 2025,
+    }),
+  );
+
+  assert.equal(result.ist_nullfall, true);
+  assert.equal(result.nullfall_grund, "Erwerb nach dem Steuerjahr: keine Vorabpauschale.");
+  assert.equal(result.vorabpauschale, 0);
+});
+
+test("getKuerzungsmonate – vier Fälle", () => {
+  assert.equal(getKuerzungsmonate("2021-08-02", 2025), 0);
+  assert.equal(getKuerzungsmonate("2025-06-15", 2025), 5);
+  assert.equal(getKuerzungsmonate("2025-01-10", 2025), 0);
+  assert.equal(getKuerzungsmonate("2026-01-10", 2025), 0);
 });
 
 test("calculateMandant – KiSt none / 8 / 9 und Soli", () => {
