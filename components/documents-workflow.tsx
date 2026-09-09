@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { supabase } from "@/lib/supabase";
@@ -13,6 +14,7 @@ type DocumentStatus =
   | "Hochgeladen"
   | "Extraktion läuft"
   | "Prüfung erforderlich"
+  | "Geprüft"
   | "Freigegeben"
   | "Fehler";
 
@@ -29,39 +31,66 @@ const statusCycle: DocumentStatus[] = [
   "Hochgeladen",
   "Extraktion läuft",
   "Prüfung erforderlich",
+  "Geprüft",
   "Freigegeben",
   "Fehler",
 ];
+
+const statusToUploadStatus: Record<DocumentStatus, string> = {
+  Hochgeladen: "uploaded",
+  "Extraktion läuft": "processing",
+  "Prüfung erforderlich": "needs_review",
+  Geprüft: "reviewed",
+  Freigegeben: "approved",
+  Fehler: "error",
+};
 
 const statusStyle: Record<DocumentStatus, string> = {
   Hochgeladen: "bg-zinc-100 text-zinc-700",
   "Extraktion läuft": "bg-blue-50 text-blue-700",
   "Prüfung erforderlich": "bg-amber-50 text-amber-700",
+  Geprüft: "bg-emerald-50 text-emerald-800",
   Freigegeben: "bg-emerald-50 text-emerald-700",
   Fehler: "bg-red-50 text-red-700",
 };
 
+const extractableDocumentStatuses: DocumentStatus[] = [
+  "Hochgeladen",
+  "Prüfung erforderlich",
+  "Fehler",
+];
+
+const reviewableDocumentStatuses: DocumentStatus[] = [
+  "Prüfung erforderlich",
+  "Geprüft",
+  "Freigegeben",
+];
+
 type DocumentsWorkflowProps = {
   clientId: string;
   taxYearId: string;
+  year: string;
   portfolioOptions: PortfolioOption[];
 };
 
 export function DocumentsWorkflow({
   clientId,
   taxYearId,
+  year,
   portfolioOptions,
 }: DocumentsWorkflowProps) {
   const [selectedPortfolioId, setSelectedPortfolioId] = useState(
     portfolioOptions[0]?.id ?? "",
   );
   const [rows, setRows] = useState<DocumentRow[]>([]);
-  const [fileRenameDrafts, setFileRenameDrafts] = useState<Record<string, string>>({});
   const [pendingUploadName, setPendingUploadName] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoadingRows, setIsLoadingRows] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [extractingByDocumentId, setExtractingByDocumentId] = useState<Record<string, boolean>>({});
+  const [deletingByDocumentId, setDeletingByDocumentId] = useState<Record<string, boolean>>({});
+  const [updatingByDocumentId, setUpdatingByDocumentId] = useState<Record<string, boolean>>({});
 
   type StatementRow = {
     id: string;
@@ -77,6 +106,7 @@ export function DocumentsWorkflow({
     if (status === "uploaded") return "Hochgeladen";
     if (status === "processing") return "Extraktion läuft";
     if (status === "needs_review") return "Prüfung erforderlich";
+    if (status === "reviewed") return "Geprüft";
     if (status === "approved") return "Freigegeben";
     return "Fehler";
   }
@@ -216,39 +246,159 @@ export function DocumentsWorkflow({
         ? selectedFiles[0].name
         : `${selectedFiles.length} Dateien ausgewählt`;
 
-  function handleStatusChange(id: string) {
-    setRows((current) =>
-      current.map((row) => {
-        if (row.id !== id) {
-          return row;
+  async function handleStatusChange(id: string, currentStatus: DocumentStatus) {
+    const index = statusCycle.indexOf(currentStatus);
+    const nextStatus = statusCycle[(index + 1) % statusCycle.length];
+    const uploadStatus = statusToUploadStatus[nextStatus];
+
+    setUpdatingByDocumentId((current) => ({ ...current, [id]: true }));
+    setErrorMessage(null);
+
+    try {
+      const response = await fetch(`/api/documents/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uploadStatus }),
+      });
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+
+      if (!response.ok) {
+        throw new Error(body?.error ?? "Status konnte nicht gespeichert werden.");
+      }
+
+      await loadRows();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Status konnte nicht gespeichert werden.",
+      );
+    } finally {
+      setUpdatingByDocumentId((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }
+  }
+
+  async function handleDelete(id: string) {
+    const confirmed = window.confirm(
+      "Diese Datei und alle bereits extrahierten Positionen dazu werden endgültig gelöscht. Fortfahren?",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingByDocumentId((current) => ({ ...current, [id]: true }));
+    setErrorMessage(null);
+
+    try {
+      const response = await fetch(`/api/documents/${id}`, { method: "DELETE" });
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+
+      if (!response.ok) {
+        throw new Error(body?.error ?? "Dokument konnte nicht gelöscht werden.");
+      }
+
+      await loadRows();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Dokument konnte nicht gelöscht werden.",
+      );
+    } finally {
+      setDeletingByDocumentId((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }
+  }
+
+  async function handleStartAiExtraction(documentId: string) {
+    setErrorMessage(null);
+
+    try {
+      const precheckResponse = await fetch(`/api/documents/${documentId}/extract`);
+      const precheckBody = (await precheckResponse.json().catch(() => null)) as {
+        approvedCount?: number;
+        error?: string;
+      } | null;
+
+      if (!precheckResponse.ok) {
+        throw new Error(precheckBody?.error ?? "Vorabprüfung für KI-Auslesen fehlgeschlagen.");
+      }
+
+      const approvedCount = precheckBody?.approvedCount ?? 0;
+      if (approvedCount > 0) {
+        const confirmed = window.confirm(
+          `Für dieses Dokument sind bereits ${approvedCount} Positionen geprüft und freigegeben. Erneutes Auslesen überschreibt diese. Fortfahren?`,
+        );
+        if (!confirmed) {
+          return;
         }
+      }
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Vorabprüfung für KI-Auslesen fehlgeschlagen.",
+      );
+      return;
+    }
 
-        const index = statusCycle.indexOf(row.status);
-        const nextStatus = statusCycle[(index + 1) % statusCycle.length];
-        return { ...row, status: nextStatus };
-      }),
-    );
+    setExtractingByDocumentId((current) => ({ ...current, [documentId]: true }));
+
+    try {
+      const response = await fetch(`/api/documents/${documentId}/extract`, {
+        method: "POST",
+      });
+
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+
+      if (!response.ok) {
+        throw new Error(body?.error ?? "KI-Auslesen fehlgeschlagen.");
+      }
+
+      await loadRows();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "KI-Auslesen fehlgeschlagen.",
+      );
+    } finally {
+      setExtractingByDocumentId((current) => {
+        const next = { ...current };
+        delete next[documentId];
+        return next;
+      });
+    }
   }
 
-  function handleDelete(id: string) {
-    setRows((current) => current.filter((row) => row.id !== id));
-  }
+  async function handleRename(id: string, currentName: string) {
+    const nextName = window.prompt("Neuen Dateinamen eingeben", currentName)?.trim();
+    if (!nextName || nextName === currentName) return;
 
-  function handleStartAiExtraction(documentId: string) {
-    // Platzhalter: hier wird später die KI-Extraktion für das Dokument gestartet.
-    void documentId;
-  }
+    setUpdatingByDocumentId((current) => ({ ...current, [id]: true }));
+    setErrorMessage(null);
 
-  function handleRenameSave(id: string, nameDraft?: string) {
-    const nextName = (nameDraft ?? fileRenameDrafts[id])?.trim();
-    if (!nextName) return;
-    setRows((current) =>
-      current.map((row) => (row.id === id ? { ...row, fileName: nextName } : row)),
-    );
-    setFileRenameDrafts((current) => {
-      const { [id]: _, ...rest } = current;
-      return rest;
-    });
+    try {
+      const response = await fetch(`/api/documents/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName: nextName }),
+      });
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+
+      if (!response.ok) {
+        throw new Error(body?.error ?? "Umbenennen fehlgeschlagen.");
+      }
+
+      await loadRows();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Umbenennen fehlgeschlagen.");
+    } finally {
+      setUpdatingByDocumentId((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    }
   }
 
   return (
@@ -290,7 +440,7 @@ export function DocumentsWorkflow({
           </label>
 
           <div className="text-sm text-zinc-700">
-            Dateiname (optional)
+            Dateiname
             <input
               type="text"
               value={pendingUploadName}
@@ -332,7 +482,21 @@ export function DocumentsWorkflow({
                   </td>
                 </tr>
               ) : null}
-              {rows.map((row) => (
+              {rows.map((row) => {
+                const isExtracting = Boolean(extractingByDocumentId[row.id]);
+                const isDeleting = Boolean(deletingByDocumentId[row.id]);
+                const isUpdating = Boolean(updatingByDocumentId[row.id]);
+                const canStartExtraction =
+                  extractableDocumentStatuses.includes(row.status) &&
+                  !isExtracting &&
+                  !isDeleting &&
+                  !isUpdating;
+                const canOpenReview = reviewableDocumentStatuses.includes(row.status);
+                const reviewLabel =
+                  row.status === "Prüfung erforderlich" ? "Prüfen" : "Ansehen";
+                const actionsDisabled = isDeleting || isExtracting || isUpdating;
+
+                return (
                 <tr key={row.id} className="text-zinc-700">
                   <td className="px-3 py-3">{row.fileName}</td>
                   <td className="px-3 py-3">{getPortfolioLabel(row.portfolioId)}</td>
@@ -346,14 +510,25 @@ export function DocumentsWorkflow({
                     </span>
                   </td>
                   <td className="px-3 py-3">
-                    <div className="flex items-center gap-1">
+                    <div className="flex flex-wrap items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => handleStartAiExtraction(row.id)}
+                        onClick={() => void handleStartAiExtraction(row.id)}
+                        disabled={!canStartExtraction}
                         aria-label="KI-Auslesen starten"
-                        title="KI-Auslesen starten"
-                        className="rounded-md border border-zinc-300 p-1.5 text-violet-700 hover:bg-violet-50 hover:text-violet-900"
+                        title={
+                          canStartExtraction
+                            ? "KI-Auslesen starten"
+                            : "KI-Auslesen nicht verfügbar (nur bei Hochgeladen, Prüfung erforderlich oder Fehler)"
+                        }
+                        className="rounded-md border border-zinc-300 p-1.5 text-violet-700 hover:bg-violet-50 hover:text-violet-900 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
                       >
+                        {isExtracting ? (
+                          <span
+                            className="block h-4 w-4 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700"
+                            aria-hidden="true"
+                          />
+                        ) : (
                         <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
                           <path
                             d="M10 3.5l1.1 2.4 2.6.4-1.9 1.8.4 2.6L10 9.6 7.8 10.7l.4-2.6-1.9-1.8 2.6-.4L10 3.5z"
@@ -368,9 +543,28 @@ export function DocumentsWorkflow({
                             strokeLinecap="round"
                           />
                         </svg>
+                        )}
                       </button>
-                      <button
-                        type="button"
+                      {canOpenReview ? (
+                        <Link
+                          href={`/clients/${clientId}/years/${year}/documents/${row.id}/review`}
+                          aria-label={reviewLabel}
+                          title={reviewLabel}
+                          className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100"
+                        >
+                          {reviewLabel}
+                        </Link>
+                      ) : (
+                        <span
+                          aria-label="Prüfen (noch nicht verfügbar)"
+                          title="Prüfen erst nach KI-Auslesen verfügbar"
+                          className="rounded-md border border-zinc-200 px-2 py-1.5 text-xs font-medium text-zinc-400"
+                        >
+                          Prüfen
+                        </span>
+                      )}
+                      <Link
+                        href={`/clients/${clientId}/years/${year}/modules/vorabpauschale/review-table`}
                         aria-label="Zur Prüftabelle"
                         title="Zur Prüftabelle"
                         className="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
@@ -379,13 +573,14 @@ export function DocumentsWorkflow({
                           <rect x="3" y="4" width="14" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
                           <path d="M3 8h14M8 8v8" stroke="currentColor" strokeWidth="1.5" />
                         </svg>
-                      </button>
+                      </Link>
                       <button
                         type="button"
-                        onClick={() => handleStatusChange(row.id)}
+                        onClick={() => void handleStatusChange(row.id, row.status)}
+                        disabled={actionsDisabled}
                         aria-label="Status ändern"
                         title="Status ändern"
-                        className="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
+                        className="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
                           <path
@@ -399,15 +594,11 @@ export function DocumentsWorkflow({
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          const nextName = window.prompt("Neuen Dateinamen eingeben", row.fileName);
-                          if (!nextName) return;
-                          setFileRenameDrafts((current) => ({ ...current, [row.id]: nextName }));
-                          handleRenameSave(row.id, nextName);
-                        }}
+                        onClick={() => void handleRename(row.id, row.fileName)}
+                        disabled={actionsDisabled}
                         aria-label="Umbenennen"
                         title="Umbenennen"
-                        className="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
+                        className="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
                           <path
@@ -422,11 +613,18 @@ export function DocumentsWorkflow({
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleDelete(row.id)}
+                        onClick={() => void handleDelete(row.id)}
+                        disabled={actionsDisabled}
                         aria-label="Löschen"
                         title="Löschen"
-                        className="rounded-md border border-zinc-300 p-1.5 text-red-700 hover:bg-red-50"
+                        className="rounded-md border border-zinc-300 p-1.5 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
+                        {isDeleting ? (
+                          <span
+                            className="block h-4 w-4 animate-spin rounded-full border-2 border-red-200 border-t-red-700"
+                            aria-hidden="true"
+                          />
+                        ) : (
                         <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" aria-hidden="true">
                           <path d="M4.5 6h11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
                           <path
@@ -437,11 +635,13 @@ export function DocumentsWorkflow({
                             strokeLinejoin="round"
                           />
                         </svg>
+                        )}
                       </button>
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {!isLoadingRows && rows.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-3 py-6 text-center text-zinc-500">

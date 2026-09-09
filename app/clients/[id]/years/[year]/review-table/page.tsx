@@ -1,6 +1,4 @@
-import { ClientYearNav } from "@/components/client-year-nav";
-
-import { ReviewTableWorkspace } from "./review-table-workspace";
+import { redirect } from "next/navigation";
 
 type YearReviewTablePageProps = {
   params: Promise<{
@@ -9,13 +7,8 @@ type YearReviewTablePageProps = {
   }>;
 };
 
+/** Kompatibilitätsroute: leitet auf Module → Vorabpauschale → Prüftabelle um. */
 export default async function YearReviewTablePage({ params }: YearReviewTablePageProps) {
   const { id, year } = await params;
-
-  return (
-    <div>
-      <ClientYearNav clientId={id} year={year} />
-      <ReviewTableWorkspace clientId={id} year={year} />
-    </div>
-  );
+  redirect(`/clients/${id}/years/${year}/modules/vorabpauschale/review-table`);
 }

@@ -1,6 +1,4 @@
-import { ClientYearNav } from "@/components/client-year-nav";
-
-import { CalculationSummary } from "./calculation-summary";
+import { redirect } from "next/navigation";
 
 type YearCalculationPageProps = {
   params: Promise<{
@@ -9,15 +7,8 @@ type YearCalculationPageProps = {
   }>;
 };
 
-export default async function YearCalculationPage({
-  params,
-}: YearCalculationPageProps) {
+/** Kompatibilitätsroute: leitet auf Module → Vorabpauschale → Berechnung um. */
+export default async function YearCalculationPage({ params }: YearCalculationPageProps) {
   const { id, year } = await params;
-
-  return (
-    <div>
-      <ClientYearNav clientId={id} year={year} />
-      <CalculationSummary clientId={id} year={year} />
-    </div>
-  );
+  redirect(`/clients/${id}/years/${year}/modules/vorabpauschale/calculation`);
 }

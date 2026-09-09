@@ -104,7 +104,7 @@ export default async function ClientYearOverviewPage({
             Zu Dokumente
           </Link>
           <Link
-            href={`/clients/${id}/years/${year}/calculation`}
+            href={`/clients/${id}/years/${year}/modules/vorabpauschale/calculation`}
             className="rounded-md border border-zinc-300 p-3 text-sm text-zinc-700 hover:bg-zinc-100"
           >
             Zu Berechnung

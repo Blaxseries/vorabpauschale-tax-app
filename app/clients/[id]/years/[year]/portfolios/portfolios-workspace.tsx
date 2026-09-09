@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
+import { CountrySelect, CurrencySelect } from "@/components/geo-selects";
 import type { Portfolio, TaxYear } from "@/lib/database.types";
 import { supabase } from "@/lib/supabase";
 
@@ -46,6 +47,7 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [deletingByPortfolioId, setDeletingByPortfolioId] = useState<Record<string, boolean>>({});
 
   function toErrorMessage(prefix: string, message: string | null): string {
     if (!message) {
@@ -107,13 +109,36 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
         return;
       }
 
+      const portfolioIds = portfolioData.map((entry) => entry.id);
+      const documentCountByPortfolio = new Map<string, number>();
+
+      if (portfolioIds.length > 0) {
+        const { data: uploadRows, error: uploadError } = await supabase
+          .from("statement_uploads")
+          .select("portfolio_id")
+          .in("portfolio_id", portfolioIds)
+          .returns<Array<{ portfolio_id: string | null }>>();
+
+        if (uploadError) {
+          console.error("Dokumentanzahl konnte nicht geladen werden:", uploadError);
+        } else {
+          for (const upload of uploadRows ?? []) {
+            if (!upload.portfolio_id) continue;
+            documentCountByPortfolio.set(
+              upload.portfolio_id,
+              (documentCountByPortfolio.get(upload.portfolio_id) ?? 0) + 1,
+            );
+          }
+        }
+      }
+
       const mappedRows: PortfolioRow[] = portfolioData.map((entry) => ({
         id: entry.id,
         bank_name: entry.bank_name,
         country: entry.country,
         account_number: entry.account_number,
         currency: entry.currency,
-        documentCount: 0,
+        documentCount: documentCountByPortfolio.get(entry.id) ?? 0,
         status: "Offen",
       }));
 
@@ -178,6 +203,41 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
     }
   }
 
+  async function handleDeletePortfolio(portfolio: PortfolioRow) {
+    const documentHint =
+      portfolio.documentCount > 0
+        ? ` inklusive ${portfolio.documentCount} Dokument${portfolio.documentCount === 1 ? "" : "e"} und zugehöriger Statements`
+        : "";
+    const confirmed = window.confirm(
+      `Depot „${portfolio.bank_name}“ (${portfolio.account_number})${documentHint} wird endgültig gelöscht. Fortfahren?`,
+    );
+    if (!confirmed) return;
+
+    setDeletingByPortfolioId((current) => ({ ...current, [portfolio.id]: true }));
+    setErrorMessage(null);
+
+    try {
+      const response = await fetch(`/api/portfolios/${portfolio.id}`, { method: "DELETE" });
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+
+      if (!response.ok) {
+        throw new Error(body?.error ?? "Depot konnte nicht gelöscht werden.");
+      }
+
+      await fetchPortfolios();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Depot konnte nicht gelöscht werden.",
+      );
+    } finally {
+      setDeletingByPortfolioId((current) => {
+        const next = { ...current };
+        delete next[portfolio.id];
+        return next;
+      });
+    }
+  }
+
   return (
     <div className="space-y-4">
       <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
@@ -222,7 +282,10 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
                 </td>
               </tr>
             ) : null}
-            {rows.map((row) => (
+            {rows.map((row) => {
+              const isDeleting = Boolean(deletingByPortfolioId[row.id]);
+
+              return (
               <tr key={row.id} className="text-zinc-700">
                 <td className="px-4 py-3 font-medium text-zinc-900">{row.bank_name}</td>
                 <td className="px-4 py-3">{row.country}</td>
@@ -239,15 +302,24 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
                       Dokumente öffnen
                     </Link>
                     <Link
-                      href={`/clients/${clientId}/years/${year}/calculation`}
+                      href={`/clients/${clientId}/years/${year}/modules/vorabpauschale/calculation`}
                       className="rounded-md border border-zinc-300 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-100"
                     >
                       Berechnung anzeigen
                     </Link>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeletePortfolio(row)}
+                      disabled={isDeleting}
+                      className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isDeleting ? "Löscht..." : "Löschen"}
+                    </button>
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {!isLoading && rows.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-8 text-center text-zinc-500">
@@ -278,16 +350,15 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
               </label>
               <label className="text-sm text-zinc-700">
                 Land
-                <input
-                  type="text"
-                  maxLength={2}
-                  value={form.country}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, country: event.target.value }))
-                  }
-                  className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2 uppercase"
-                  required
-                />
+                <div className="mt-1">
+                  <CountrySelect
+                    value={form.country || "DE"}
+                    onChange={(code) =>
+                      setForm((current) => ({ ...current, country: code }))
+                    }
+                    required
+                  />
+                </div>
               </label>
               <label className="text-sm text-zinc-700">
                 Depotnummer
@@ -306,16 +377,15 @@ export function PortfoliosWorkspace({ clientId, year }: PortfoliosWorkspaceProps
               </label>
               <label className="text-sm text-zinc-700">
                 Währung
-                <input
-                  type="text"
-                  maxLength={3}
-                  value={form.currency}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, currency: event.target.value }))
-                  }
-                  className="mt-1 w-full rounded-md border border-zinc-300 px-3 py-2 uppercase"
-                  required
-                />
+                <div className="mt-1">
+                  <CurrencySelect
+                    value={form.currency || "EUR"}
+                    onChange={(code) =>
+                      setForm((current) => ({ ...current, currency: code }))
+                    }
+                    required
+                  />
+                </div>
               </label>
               <div className="flex items-end justify-end gap-2 md:col-span-2">
                 <button

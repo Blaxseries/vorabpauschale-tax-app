@@ -12,9 +12,8 @@ const yearNavItems = [
   { label: "Übersicht", segment: "" },
   { label: "Depots", segment: "portfolios" },
   { label: "Dokumente", segment: "documents" },
-  { label: "Prüftabelle", segment: "review-table" },
-  { label: "Berechnung", segment: "calculation" },
-  { label: "Export", segment: "export" },
+  { label: "Datenprüfung", segment: "data-review" },
+  { label: "Module", segment: "modules" },
   { label: "Prüfprotokoll", segment: "audit-log" },
 ] as const;
 
@@ -43,7 +42,14 @@ export function ClientYearNav({ clientId, year }: ClientYearNavProps) {
       <ul className="flex flex-wrap gap-1">
         {yearNavItems.map((item) => {
           const href = item.segment ? `${basePath}/${item.segment}` : basePath;
-          const isActive = pathname === href;
+          const isActive =
+            item.segment === ""
+              ? pathname === href
+              : item.segment === "documents"
+                ? pathname === href || pathname.startsWith(`${href}/`)
+                : item.segment === "modules"
+                  ? pathname === href || pathname.startsWith(`${href}/`)
+                  : pathname === href || pathname.startsWith(`${href}/`);
 
           return (
             <li key={href}>

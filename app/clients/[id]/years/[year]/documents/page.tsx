@@ -52,6 +52,7 @@ export default async function YearDocumentsPage({ params }: YearDocumentsPagePro
       <DocumentsWorkflow
         clientId={id}
         taxYearId={taxYear.id}
+        year={year}
         portfolioOptions={portfolioOptions}
       />
     </div>

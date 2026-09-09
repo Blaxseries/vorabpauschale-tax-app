@@ -20,3 +20,6 @@
 - Audit-Log einbauen
 - Fehlerlogs ohne personenbezogene Daten
 - Security Review durch externen Entwickler
+
+## Aktuelle offene Schulden
+- `extracted_positions` verwendet aktuell nur eine authentifiziert-only Policy. Kanzleitrennung fehlt und muss vor Produktivbetrieb nachgezogen werden.

@@ -52,9 +52,32 @@ export interface StatementUpload {
   file_name: string;
   document_type: string;
   uploaded_at: string;
-  status: "uploaded" | "processing" | "needs_review" | "approved" | "error";
+  status:
+    | "uploaded"
+    | "processing"
+    | "needs_review"
+    | "reviewed"
+    | "approved"
+    | "error";
   created_at: string;
   updated_at: string;
+}
+
+export interface ExtractedPosition {
+  id: string;
+  document_id: string;
+  portfolio_id: string;
+  isin: string;
+  fondsname: string;
+  anzahl_anteile: number;
+  kurs_jahresanfang: number;
+  kurs_jahresende: number;
+  ausschuettungen: number;
+  waehrung: string;
+  kauf_datum: string | null;
+  verkauf_datum: string | null;
+  review_status: string;
+  created_at: string;
 }
 
 export interface FundPosition {
